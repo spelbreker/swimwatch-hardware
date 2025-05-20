@@ -1,5 +1,7 @@
 #include <TFT_eSPI.h>
 #include <SPI.h>
+#include "esp_system.h"
+#include "esp_timer.h"
 
 constexpr int BUTTON_RESET_PIN = 0;   // GPIO0
 constexpr int BUTTON_STARTSTOP_PIN = 14; // GPIO14
@@ -8,10 +10,15 @@ TFT_eSPI tft = TFT_eSPI();
 
 // Constants
 constexpr unsigned long DEBOUNCE_TIME = 200; // 200ms debounce time
+constexpr unsigned long DISPLAY_REFRESH = 1000 / 20; // 20 fps refresh rate
 
 // Stopwatch state
 enum StopwatchState { STOPPED, RUNNING };
 StopwatchState stopwatchState = STOPPED;
+
+// Time tracking variables
+int64_t startMicros = 0;
+int64_t elapsedMicros = 0;
 
 // Debounce variables
 volatile unsigned long lastStartStopPress = 0;
@@ -24,14 +31,14 @@ void IRAM_ATTR onResetButton() {
 }
 
 void IRAM_ATTR onStartStopButton() {
-    unsigned long currentTime = millis();
-    if (currentTime - lastStartStopPress >= DEBOUNCE_TIME) {
+    int64_t currentMicros = esp_timer_get_time();
+    if ((currentMicros / 1000) - lastStartStopPress >= DEBOUNCE_TIME) {
         if (stopwatchState == STOPPED) {
             stopwatchState = RUNNING;
         } else {
             stopwatchState = STOPPED;
         }
-        lastStartStopPress = currentTime;
+        lastStartStopPress = currentMicros / 1000;
     }
 }
 
@@ -61,11 +68,12 @@ void setup() {
 }
 
 // Format time as mm:ss:ms
-void formatTime(unsigned long ms, char* buffer, size_t len) {
-  unsigned int minutes = ms / 60000;
-  unsigned int seconds = (ms % 60000) / 1000;
-  unsigned int millis = (ms % 1000) / 100;  // Only first digit of milliseconds
-  snprintf(buffer, len, "%02u:%02u:%1u", minutes, seconds, millis);
+void formatTime(int64_t microseconds, char* buffer, size_t len) {
+  int64_t totalMs = microseconds / 1000;
+  unsigned int minutes = totalMs / 60000;
+  unsigned int seconds = (totalMs % 60000) / 1000;
+  unsigned int millis = (totalMs % 1000) / 10;  // Two digits of milliseconds (0-99)
+  snprintf(buffer, len, "%02u:%02u:%02u", minutes, seconds, millis);
 }
 
 void updateDisplay(unsigned long ms) {
@@ -86,47 +94,42 @@ void updateDisplay(unsigned long ms) {
 }
 
 void loop() {
-    static unsigned long startTime = 0;
-    static unsigned long elapsedTime = 0;
-    static unsigned long lastUpdateTime = 0;
+    static int64_t lastUpdateMicros = 0;
     static bool displayNeedsUpdate = true;
 
     // Handle reset request from ISR
     if (needsReset) {
-        elapsedTime = 0;
-        startTime = 0;
+        elapsedMicros = 0;
+        startMicros = 0;
         displayNeedsUpdate = true;
-        stopwatchState = STOPPED;  // Reset state to STOPPED
+        stopwatchState = STOPPED;
         needsReset = false;
     }
 
-    // If state changed, update the display
-    if (displayNeedsUpdate) {
-        updateDisplay(elapsedTime);
-        displayNeedsUpdate = false;
-    }
+    // Get current time
+    int64_t currentMicros = esp_timer_get_time();
 
     // Handle running state
     if (stopwatchState == RUNNING) {
-        unsigned long currentTime = millis();
-        
-        // Update time if stopwatch is running
-        if (startTime == 0) {
-            startTime = currentTime - elapsedTime;  // Resume from previous elapsed time
+        if (startMicros == 0) {
+            startMicros = currentMicros - elapsedMicros;  // Resume from previous elapsed time
         }
+        elapsedMicros = currentMicros - startMicros;
         
-        elapsedTime = currentTime - startTime;
-        
-        // Update display every 100ms to avoid flicker
-        if (currentTime - lastUpdateTime >= 100) {
-            updateDisplay(elapsedTime);
-            lastUpdateTime = currentTime;
+        // Update display every DISPLAY_REFRESH ms
+        if ((currentMicros - lastUpdateMicros) >= (DISPLAY_REFRESH * 1000)) {
+            updateDisplay(elapsedMicros);
+            lastUpdateMicros = currentMicros;
         }
     } else if (stopwatchState == STOPPED) {
-        // Reset start time when stopped, but keep elapsed time
-        startTime = 0;
+        // When stopped, update display once to show final time
+        if (displayNeedsUpdate) {
+            updateDisplay(elapsedMicros);
+            displayNeedsUpdate = false;
+        }
+        startMicros = 0;  // Reset start time but keep elapsed time
     }
-
-    // Small delay to prevent overwhelming the processor
-    delay(10);
+    
+    // Very small delay to prevent overwhelming the processor
+    delay(1);
 }

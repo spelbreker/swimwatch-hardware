@@ -37,6 +37,10 @@
   - Display time in mm:ss:ms format on the TFT display
     - the miliseconds only 1 digit
   - use hardware interrupts for button presses
+  - Use internal RTC for timing
+  - When start save the current RTC value
+  - Refresh display every 100ms
+  - When stopped, show full time with 2 digits for milliseconds
 
 ## Style Rules
 
@@ -55,5 +59,4 @@
 
 # Resources
 - https://lilygo.cc/products/t-display-s3
-- https://github.com/Xinyuan-LilyGO/T-Display-S3
-
+- https://github.com/Xinyuan-LilyGO/T-Display-S3- https://gist.github.com/buzzkillb/2b6381632f73ee965e1c9329163fdfd3
