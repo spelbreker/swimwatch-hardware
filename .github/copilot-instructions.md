@@ -38,10 +38,6 @@
     - the miliseconds only 1 digit
   - use hardware interrupts for button presses
 
-## Default Prompt
-
-> You are writing Arduino code for the LilyGO T-Display. The app is a stopwatch that displays time on the built-in TFT. Use GPIO35 as the start/stop button and GPIO0 as the reset button. Follow best practices for embedded C++ and Arduino. Use clear, modular code and document your logic.
-
 ## Style Rules
 
 - Use descriptive variable and function names.
@@ -57,7 +53,7 @@
 - Document any hardware dependencies or wiring in comments at the top of the file.
 
 
-#resources
-https://lilygo.cc/products/t-display-s3
-https://github.com/Xinyuan-LilyGO/T-Display-S3
+# Resources
+- https://lilygo.cc/products/t-display-s3
+- https://github.com/Xinyuan-LilyGO/T-Display-S3
 
