@@ -59,4 +59,5 @@
 
 # Resources
 - https://lilygo.cc/products/t-display-s3
-- https://github.com/Xinyuan-LilyGO/T-Display-S3- https://gist.github.com/buzzkillb/2b6381632f73ee965e1c9329163fdfd3
+- https://github.com/Xinyuan-LilyGO/T-Display-S3
+- https://gist.github.com/buzzkillb/2b6381632f73ee965e1c9329163fdfd3

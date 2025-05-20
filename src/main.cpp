@@ -32,13 +32,13 @@ void IRAM_ATTR onResetButton() {
 
 void IRAM_ATTR onStartStopButton() {
     int64_t currentMicros = esp_timer_get_time();
-    if ((currentMicros / 1000) - lastStartStopPress >= DEBOUNCE_TIME) {
+    if ((currentMicros - lastStartStopPress) >= (DEBOUNCE_TIME * 1000)) {
         if (stopwatchState == STOPPED) {
             stopwatchState = RUNNING;
         } else {
             stopwatchState = STOPPED;
         }
-        lastStartStopPress = currentMicros / 1000;
+        lastStartStopPress = currentMicros;
     }
 }
 
