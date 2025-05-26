@@ -1,135 +1,200 @@
+/**
+ * LilyGO T-Display S3 Stopwatch - Hardware Interrupts
+ * BUTTON1 (Start/Lap): GPIO35 (active LOW)
+ * BUTTON2 (Stop):      GPIO14 (active LOW)
+ * Display: ST7789V via TFT_eSPI
+ * 
+ * Features:
+ * - Hardware interrupt buttons
+ * - Software debounce
+ * - Time measurement using millis()
+ * - 25Hz display refresh rate
+ */
+
 #include <TFT_eSPI.h>
 #include <SPI.h>
-#include "esp_system.h"
-#include "esp_timer.h"
 
-constexpr int BUTTON_RESET_PIN = 0;   // GPIO0
-constexpr int BUTTON_STARTSTOP_PIN = 14; // GPIO14
+// Constants and Pin Definitions
+#define BUTTON_START_LAP_PIN 0
+#define BUTTON_STOP_PIN      14
+#define DEBOUNCE_TIME_MS     50    // Reduced debounce time for better responsiveness
+#define DISPLAY_REFRESH_MS   50    // 20Hz refresh rate
 
+constexpr uint8_t MAX_LAPS = 5;
+
+// Type definitions
+enum StopwatchState { STOPPED, RUNNING };
+struct LapData { uint32_t lapTimeMs, totalTimeMs; };
+
+// Forward declarations
+void resetStopwatch();
+void drawStopwatch(uint32_t currentElapsedMs);
+void processStartLap();
+void processStop();
+void addLap(uint32_t currentElapsedMs);
+void drawLaps();
+String formatTime(uint32_t ms);
+
+// Global variables
 TFT_eSPI tft = TFT_eSPI();
 
-// Constants
-constexpr unsigned long DEBOUNCE_TIME = 200; // 200ms debounce time
-constexpr unsigned long DISPLAY_REFRESH = 1000 / 20; // 20 fps refresh rate
+volatile bool startLapInterrupt = false;
+volatile bool stopInterrupt = false;
 
-// Stopwatch state
-enum StopwatchState { STOPPED, RUNNING };
+volatile uint32_t lastStartLapInterrupt = 0;
+volatile uint32_t lastStopInterrupt = 0;
+
 StopwatchState stopwatchState = STOPPED;
+uint32_t startTimeMs = 0;
+uint32_t elapsedMs = 0;
+uint32_t lastDisplayUpdateMs = 0;
 
-// Time tracking variables
-int64_t startMicros = 0;
-int64_t elapsedMicros = 0;
+LapData laps[MAX_LAPS];
+uint8_t lapCount = 0;
 
-// Debounce variables
-volatile unsigned long lastStartStopPress = 0;
-volatile bool needsReset = false;
-
-// Interrupt Service Routines (ISRs)
-void IRAM_ATTR onResetButton() {
-    stopwatchState = STOPPED;
-    needsReset = true;  // Set flag to reset time in main loop
-}
-
-void IRAM_ATTR onStartStopButton() {
-    int64_t currentMicros = esp_timer_get_time();
-    if ((currentMicros - lastStartStopPress) >= (DEBOUNCE_TIME * 1000)) {
-        if (stopwatchState == STOPPED) {
-            stopwatchState = RUNNING;
-        } else {
-            stopwatchState = STOPPED;
-        }
-        lastStartStopPress = currentMicros;
-    }
-}
-
-void setup() {
-  // Initialize serial for debugging (disable in production)
-  Serial.begin(9600);
-
-  // Button pins
-  pinMode(BUTTON_RESET_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_STARTSTOP_PIN, INPUT_PULLUP);
-
-  // Attach interrupts (FALLING edge, active LOW)
-  attachInterrupt(digitalPinToInterrupt(BUTTON_RESET_PIN), onResetButton, FALLING);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_STARTSTOP_PIN), onStartStopButton, FALLING);
-
-  // TFT display
-  tft.begin();
-  tft.setRotation(3);
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_GREEN, TFT_BLACK);
-  tft.setFreeFont(&Orbitron_Light_24);
-  tft.setCursor(20, 50);
-  tft.print("00:00:000");
-  tft.setTextFont(1);
-  tft.setCursor(20, 100);
-  tft.print("Press Start/Stop");
-}
-
-// Format time as mm:ss:ms
-void formatTime(int64_t microseconds, char* buffer, size_t len) {
-  int64_t totalMs = microseconds / 1000;
-  unsigned int minutes = totalMs / 60000;
-  unsigned int seconds = (totalMs % 60000) / 1000;
-  unsigned int millis = (totalMs % 1000) / 10;  // Two digits of milliseconds (0-99)
-  snprintf(buffer, len, "%02u:%02u:%02u", minutes, seconds, millis);
-}
-
-void updateDisplay(unsigned long ms) {
-  char timeStr[16];
-  formatTime(ms, timeStr, sizeof(timeStr));
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_GREEN, TFT_BLACK);
-  tft.setFreeFont(&Orbitron_Light_24);
-  tft.setCursor(20, 50);
-  tft.print(timeStr);
-  tft.setTextFont(1);
-  tft.setCursor(20, 100);
-  if (stopwatchState == RUNNING) {
-    tft.print("Running");
-  } else {
-    tft.print("Stopped");
+// ---------- Interrupt Service Routines ----------
+void IRAM_ATTR handleStartLapInterrupt() {
+  uint32_t now = millis();
+  if (now - lastStartLapInterrupt > DEBOUNCE_TIME_MS) {
+    startLapInterrupt = true;
+    lastStartLapInterrupt = now;
+    Serial.println("Start/Lap button pressed"); // Debug output
   }
 }
 
+void IRAM_ATTR handleStopInterrupt() {
+  uint32_t now = millis();
+  if (now - lastStopInterrupt > DEBOUNCE_TIME_MS) {
+    stopInterrupt = true;
+    lastStopInterrupt = now;
+    Serial.println("Stop button pressed"); // Debug output
+  }
+}
+
+// --------------- Setup -----------------
+void setup() {
+  // Initialize Serial for debugging
+  Serial.begin(115200);
+  
+  // Button setup with explicit GPIO configuration
+  pinMode(BUTTON_START_LAP_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_STOP_PIN, INPUT_PULLUP);
+
+  // Attach interrupts with explicit GPIO numbers
+  attachInterrupt(BUTTON_START_LAP_PIN, handleStartLapInterrupt, FALLING);
+  attachInterrupt(BUTTON_STOP_PIN, handleStopInterrupt, FALLING);
+
+  // Initialize display
+  tft.init();
+  tft.setRotation(1);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextFont(4);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+
+  resetStopwatch();
+  drawStopwatch(0);
+
+  // Serial.begin(115200); // debugging indien gewenst
+}
+
+// --------------- Loop -----------------
 void loop() {
-    static int64_t lastUpdateMicros = 0;
-    static bool displayNeedsUpdate = true;
+  uint32_t now = millis();
 
-    // Handle reset request from ISR
-    if (needsReset) {
-        elapsedMicros = 0;
-        startMicros = 0;
-        displayNeedsUpdate = true;
-        stopwatchState = STOPPED;
-        needsReset = false;
-    }
+  // ---- Interrupts verwerken ----
+  if (startLapInterrupt) {
+    startLapInterrupt = false;
+    processStartLap();
+  }
+  if (stopInterrupt) {
+    stopInterrupt = false;
+    processStop();
+  }
 
-    // Get current time
-    int64_t currentMicros = esp_timer_get_time();
+  // ---- Display Update ----
+  uint32_t showElapsedMs = (stopwatchState == RUNNING)
+      ? now - startTimeMs
+      : elapsedMs;
+  if (now - lastDisplayUpdateMs > DISPLAY_REFRESH_MS || lastDisplayUpdateMs == 0) {
+    drawStopwatch(showElapsedMs);
+    lastDisplayUpdateMs = now;
+  }
+}
 
-    // Handle running state
-    if (stopwatchState == RUNNING) {
-        if (startMicros == 0) {
-            startMicros = currentMicros - elapsedMicros;  // Resume from previous elapsed time
-        }
-        elapsedMicros = currentMicros - startMicros;
-        
-        // Update display every DISPLAY_REFRESH ms
-        if ((currentMicros - lastUpdateMicros) >= (DISPLAY_REFRESH * 1000)) {
-            updateDisplay(elapsedMicros);
-            lastUpdateMicros = currentMicros;
-        }
-    } else if (stopwatchState == STOPPED) {
-        // When stopped, update display once to show final time
-        if (displayNeedsUpdate) {
-            updateDisplay(elapsedMicros);
-            displayNeedsUpdate = false;
-        }
-        startMicros = 0;  // Reset start time but keep elapsed time
-    }
-    
-    // Very small delay to prevent overwhelming the processor
-    delay(1);
+// ------- Functionaliteit ---------
+void processStartLap() {
+  if (stopwatchState == STOPPED) {
+    startTimeMs = millis();
+    lapCount = 0;
+    stopwatchState = RUNNING;
+    // Clear lap display area
+    tft.fillRect(0, 65, 320, 170-65, TFT_BLACK);
+  } else if (stopwatchState == RUNNING && lapCount < MAX_LAPS) {
+    uint32_t nowMs = millis();
+    addLap(nowMs - startTimeMs);
+  }
+}
+
+void processStop() {
+  if (stopwatchState == RUNNING) {
+    elapsedMs = millis() - startTimeMs;
+    stopwatchState = STOPPED;
+    drawLaps();
+  }
+}
+
+void resetStopwatch() {
+  stopwatchState = STOPPED;
+  startTimeMs = 0;
+  elapsedMs = 0;
+  lapCount = 0;
+  for (uint8_t i = 0; i < MAX_LAPS; ++i) {
+    laps[i].lapTimeMs = 0;
+    laps[i].totalTimeMs = 0;
+  }
+}
+
+void addLap(uint32_t currentElapsedMs) {
+  uint32_t lapTime = currentElapsedMs;
+  if (lapCount > 0) {
+    lapTime = currentElapsedMs - laps[lapCount - 1].totalTimeMs;
+  }
+  laps[lapCount].lapTimeMs = lapTime;
+  laps[lapCount].totalTimeMs = currentElapsedMs;
+  lapCount++;
+  drawLaps();
+}
+
+// -------------- Display Logic ---------------
+void drawStopwatch(uint32_t currentElapsedMs) {
+  tft.fillRect(0, 0, 320, 60, TFT_BLACK);
+  tft.setCursor(10, 10);
+  tft.setTextFont(7);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.print(formatTime(currentElapsedMs));
+}
+
+void drawLaps() {
+  tft.fillRect(0, 65, 320, 170-65, TFT_BLACK);
+  tft.setTextFont(2);
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  for (uint8_t i = 0; i < lapCount; ++i) {
+    tft.setCursor(10, 70 + i*20);
+    tft.printf("Lap %d: %s (%s)", i+1, formatTime(laps[i].lapTimeMs).c_str(), formatTime(laps[i].totalTimeMs).c_str());
+  }
+  if (stopwatchState == STOPPED && lapCount > 0) {
+    tft.setCursor(10, 70 + lapCount*20);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.print("Press Start to reset.");
+  }
+}
+
+// ------------- Tijd notatie -----------------
+String formatTime(uint32_t ms) {
+  uint16_t minutes = ms / 60000;
+  uint8_t seconds = (ms / 1000) % 60;
+  uint8_t millisec = (ms % 1000) / 10;
+  char buffer[16];
+  sprintf(buffer, "%02d:%02d:%02d", minutes, seconds, millisec);
+  return String(buffer);
 }
