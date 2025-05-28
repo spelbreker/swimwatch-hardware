@@ -11,7 +11,7 @@
 - **Display:** 1.9" 170(H)RGB x320(V) ST7789V IPS LCD, 8-Bit Parallel Interface
 - **Working Power Supply:** 3.3V
 - **Onboard Buttons:**
-  - **BUTTON1:** GPIO35
+  - **BUTTON1:** GPIO0
   - **BUTTON2:** GPIO14
 - **Other Pins:**
   - **TFT_MOSI:** GPIO19
