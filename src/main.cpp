@@ -15,6 +15,8 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <Preferences.h>
+#include <WebSocketsClient.h>
+#include <ArduinoJson.h>
 
 // Constants and Pin Definitions
 #define BUTTON_START_LAP_PIN 0
@@ -40,6 +42,8 @@ String formatTime(uint32_t ms);
 void connectWiFi();
 void saveWiFiCredentials(const char* ssid, const char* password);
 bool getWiFiCredentials(String &ssid, String &password);
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length);
+void setupWebSocket();
 
 // Global variables
 Preferences preferences;
@@ -58,6 +62,14 @@ uint32_t lastDisplayUpdateMs = 0;
 
 LapData laps[MAX_LAPS];
 uint8_t lapCount = 0;
+
+// WebSocket Client
+WebSocketsClient webSocket;
+bool wsConnected = false;
+
+// Additional global variables
+uint64_t serverStartTimeMs = 0;  // Server start time in milliseconds
+uint8_t laneNumber = 9;  // Default lane number, can be changed later
 
 // ---------- Interrupt Service Routines ----------
 void IRAM_ATTR handleStartLapInterrupt() {
@@ -109,7 +121,7 @@ void setup() {
   // Initialize WiFi last
   //saveWiFiCredentials("SSID","PASSWORD"); // Uncomment to save credentials
   connectWiFi();
-
+  setupWebSocket();
 }
 
 // --------------- Loop -----------------
@@ -126,6 +138,11 @@ void loop() {
     processStop();
   }
 
+  // ---- WebSocket Loop ----
+  if (WiFi.status() == WL_CONNECTED) {
+    webSocket.loop();
+  }
+
   // ---- Display Update ----
   uint32_t showElapsedMs = (stopwatchState == RUNNING)
       ? now - startTimeMs
@@ -134,6 +151,9 @@ void loop() {
     drawStopwatch(showElapsedMs);
     lastDisplayUpdateMs = now;
   }
+
+  // ---- WebSocket loop ----
+  webSocket.loop();
 }
 
 // ------- Functionaliteit ---------
@@ -144,7 +164,23 @@ void processStartLap() {
     stopwatchState = RUNNING;
   } else if (stopwatchState == RUNNING && lapCount < MAX_LAPS) {
     uint32_t nowMs = millis();
+    uint32_t elapsedTime = nowMs - startTimeMs;
     addLap(nowMs - startTimeMs);
+      // Send lap time via WebSocket
+    if (wsConnected && serverStartTimeMs > 0) {
+      StaticJsonDocument<200> doc;
+      doc["type"] = "split";
+      doc["lane"] = String(laneNumber);
+      doc["time-ms"] = serverStartTimeMs + elapsedTime;
+      doc["time"] = formatTime(elapsedTime);
+      
+      char jsonBuffer[200];
+      serializeJson(doc, jsonBuffer);
+      webSocket.sendTXT(jsonBuffer);
+      
+      // Debug output
+      Serial.printf("Sending split for lane %d: %s\n", laneNumber, jsonBuffer);
+    }
   }
 }
 
@@ -277,4 +313,54 @@ void connectWiFi() {
         Serial.println("\nWiFi connection failed!");
         showWiFiStatus("WiFi connection failed!");
     }
+}
+
+// ------------- WebSocket Logic ---------------
+
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+    switch(type) {
+        case WStype_DISCONNECTED:
+            Serial.println("WebSocket Disconnected!");
+            wsConnected = false;
+            showWiFiStatus("WebSocket Disconnected!");
+            break;
+        case WStype_CONNECTED:
+            Serial.println("WebSocket Connected!");
+            wsConnected = true;
+            showWiFiStatus("WebSocket Connected!");
+            break;
+        case WStype_TEXT: {
+            Serial.printf("WebSocket received text: %s\n", payload);
+            
+            StaticJsonDocument<200> doc;
+            DeserializationError error = deserializeJson(doc, payload);
+            
+            if (error) {
+                Serial.print("deserializeJson() failed: ");
+                Serial.println(error.c_str());
+                return;
+            }
+              const char* msgType = doc["type"];
+            if (strcmp(msgType, "start") == 0) {
+                serverStartTimeMs = doc["time"].as<uint64_t>();
+                if (stopwatchState == STOPPED) {
+                    processStartLap();
+                }
+            } else if (strcmp(msgType, "reset") == 0) {
+                if (stopwatchState == RUNNING) {
+                    processStop();
+                }
+                resetStopwatch();
+                Serial.println("Stopwatch reset via WebSocket");
+            }
+            break;
+        }
+    }
+}
+
+void setupWebSocket() {
+    webSocket.beginSSL("scherm.azckamp.nl", 443);
+    webSocket.onEvent(webSocketEvent);
+    webSocket.setReconnectInterval(5000);
+    Serial.println("WebSocket setup completed");
 }
