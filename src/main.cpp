@@ -1,14 +1,29 @@
 /**
- * LilyGO T-Display S3 Stopwatch - Hardware Interrupts
- * BUTTON1 (Start/Lap): GPIO35 (active LOW)
- * BUTTON2 (Stop):      GPIO14 (active LOW)
- * Display: ST7789V via TFT_eSPI
+ * LilyGO T-Display S3 Stopwatch - Hardware Interrupts & WebSocket Client
+ * 
+ * Hardware:
+ * - BUTTON1 (Start/Lap): GPIO0 (active LOW)
+ * - BUTTON2 (Stop):      GPIO14 (active LOW)
+ * - Display: ST7789V via TFT_eSPI
  * 
  * Features:
  * - Hardware interrupt buttons
  * - Software debounce
  * - Time measurement using millis()
  * - 25Hz display refresh rate
+ * - WiFi connectivity with stored credentials
+ * - WebSocket client with SSL support
+ * 
+ * WebSocket Events:
+ * Receive:
+ * - {"type":"start","time":timestamp} : Start stopwatch with server time
+ * - {"type":"reset"} : Reset stopwatch to zero
+ * 
+ * Send:
+ * - {"type":"split","lane":"X","time-ms":timestamp,"time":"MM:SS:MS"} : Split time
+ * 
+ * Server:
+ * - wss://scherm.azckamp.nl:443
  */
 
 #include <TFT_eSPI.h>
