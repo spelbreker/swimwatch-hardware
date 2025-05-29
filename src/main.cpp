@@ -1,28 +1,26 @@
 /**
  * LilyGO T-Display S3 Stopwatch - Hardware Interrupts & WebSocket Client
- * 
- * Hardware:
- * - BUTTON1 (Start/Lap): GPIO0 (active LOW)
- * - BUTTON2 (Stop):      GPIO14 (active LOW)
+ * * Hardware:
+ * - BUTTON1 (Start/Lap): GPIO0 (active LOW, internal pullup)
+ * - BUTTON2 (Stop):      GPIO14 (active LOW, internal pullup)
+ * - BUTTON3 (Start):     GPIO2 (active HIGH, externe pull-down weerstand vereist)
+ * -> BELANGRIJK: Voor BUTTON3 (GPIO2) sluit de knop aan tussen 3.3V en GPIO2.
+ * Plaats een externe 1kΩ weerstand tussen GPIO2 en GND.
  * - Display: ST7789V via TFT_eSPI
- * 
- * Features:
+ * * Features:
  * - Hardware interrupt buttons
  * - Software debounce
  * - Time measurement using millis()
  * - 25Hz display refresh rate
  * - WiFi connectivity with stored credentials
  * - WebSocket client with SSL support
- * 
- * WebSocket Events:
+ * * WebSocket Events:
  * Receive:
  * - {"type":"start","time":timestamp} : Start stopwatch with server time
  * - {"type":"reset"} : Reset stopwatch to zero
- * 
- * Send:
+ * * Send:
  * - {"type":"split","lane":"X","time-ms":timestamp,"time":"MM:SS:MS"} : Split time
- * 
- * Server:
+ * * Server:
  * - wss://scherm.azckamp.nl:443
  */
 
@@ -36,8 +34,9 @@
 // Constants and Pin Definitions
 #define BUTTON_START_LAP_PIN 0
 #define BUTTON_STOP_PIN      14
-#define DEBOUNCE_TIME_MS     50    // Reduced debounce time for better responsiveness
-#define DISPLAY_REFRESH_MS   50    // 20Hz refresh rate
+#define BUTTON_START_2_PIN   2      // Additional start button on GPIO2
+#define DEBOUNCE_TIME_MS     100     // Reduced debounce time for better responsiveness
+#define DISPLAY_REFRESH_MS   50     // 20Hz refresh rate
 #define WIFI_CONNECT_TIMEOUT_MS 15000 // 15s connect timeout
 
 constexpr uint8_t MAX_LAPS = 90;      // Store up to 50 laps
@@ -67,9 +66,11 @@ TFT_eSPI tft = TFT_eSPI();
 
 volatile bool startLapInterrupt = false;
 volatile bool stopInterrupt = false;
+volatile bool start2Interrupt = false;
 
 volatile uint32_t lastStartLapInterrupt = 0;
 volatile uint32_t lastStopInterrupt = 0;
+volatile uint32_t lastStart2Interrupt = 0;
 
 StopwatchState stopwatchState = STOPPED;
 uint32_t startTimeMs = 0;
@@ -84,16 +85,27 @@ WebSocketsClient webSocket;
 bool wsConnected = false;
 
 // Additional global variables
-uint64_t serverStartTimeMs = 0;  // Server start time in milliseconds
-uint8_t laneNumber = 9;  // Default lane number, can be changed later
+uint64_t serverStartTimeMs = 0;   // Server start time in milliseconds
+uint8_t laneNumber = 9;   // Default lane number, can be changed later
 
 // ---------- Interrupt Service Routines ----------
+void IRAM_ATTR handleStart2Interrupt() {
+  uint32_t now = millis();
+  // Controleer of de knop daadwerkelijk HOOG is bij een RISING edge,
+  // dit helpt bij het filteren van ruis als de pull-down niet perfect is.
+  if (digitalRead(BUTTON_START_2_PIN) == HIGH && now - lastStart2Interrupt > DEBOUNCE_TIME_MS) {
+    start2Interrupt = true;
+    lastStart2Interrupt = now;
+    // Serial.println("Start button 2 pressed"); // Verplaatst naar processStartLap()
+  }
+}
+
 void IRAM_ATTR handleStartLapInterrupt() {
   uint32_t now = millis();
   if (now - lastStartLapInterrupt > DEBOUNCE_TIME_MS) {
     startLapInterrupt = true;
     lastStartLapInterrupt = now;
-    Serial.println("Start/Lap button pressed"); // Debug output
+    // Serial.println("Start/Lap button pressed"); // Verplaatst naar processStartLap()
   }
 }
 
@@ -102,7 +114,7 @@ void IRAM_ATTR handleStopInterrupt() {
   if (now - lastStopInterrupt > DEBOUNCE_TIME_MS) {
     stopInterrupt = true;
     lastStopInterrupt = now;
-    Serial.println("Stop button pressed"); // Debug output
+    // Serial.println("Stop button pressed"); // Verplaatst naar processStop()
   }
 }
 
@@ -118,16 +130,20 @@ void setup() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextFont(4);
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
-  Serial.println("Display initialized");
-
+  Serial.println("Display initialized"); 
+  
   // Button setup with explicit GPIO configuration
   pinMode(BUTTON_START_LAP_PIN, INPUT_PULLUP);
   pinMode(BUTTON_STOP_PIN, INPUT_PULLUP);
+  // Aangepast: Gebruik INPUT voor BUTTON_START_2_PIN met externe pull-down
+  pinMode(BUTTON_START_2_PIN, INPUT_PULLDOWN); // GPIO2 is connected to 3.3V, so we use INPUT_PULLUP
   Serial.println("Buttons configured");
 
   // Attach interrupts with explicit GPIO numbers
   attachInterrupt(BUTTON_START_LAP_PIN, handleStartLapInterrupt, FALLING);
   attachInterrupt(BUTTON_STOP_PIN, handleStopInterrupt, FALLING);
+  // Aangepast: Gebruik RISING voor BUTTON_START_2_PIN (knop verbindt met 3.3V)
+  attachInterrupt(BUTTON_START_2_PIN, handleStart2Interrupt, RISING);    
   Serial.println("Interrupts attached");
 
   resetStopwatch();
@@ -147,10 +163,17 @@ void loop() {
   // ---- Interrupts verwerken ----
   if (startLapInterrupt) {
     startLapInterrupt = false;
+    Serial.println("Start/Lap button pressed"); // Debug output verplaatst
     processStartLap();
+  }
+  if (start2Interrupt) { // Aparte check voor start2Interrupt
+    start2Interrupt = false;
+    Serial.println("Start button 2 pressed"); // Debug output verplaatst
+    processStartLap(); // Roep dezelfde functie aan als Start/Lap
   }
   if (stopInterrupt) {
     stopInterrupt = false;
+    Serial.println("Stop button pressed"); // Debug output verplaatst
     processStop();
   }
 
