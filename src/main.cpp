@@ -25,7 +25,8 @@
 #define DISPLAY_REFRESH_MS   50    // 20Hz refresh rate
 #define WIFI_CONNECT_TIMEOUT_MS 15000 // 15s connect timeout
 
-constexpr uint8_t MAX_LAPS = 5;
+constexpr uint8_t MAX_LAPS = 90;      // Store up to 50 laps
+constexpr uint8_t DISPLAY_LAPS = 5;   // Show only last 5 laps
 
 // Type definitions
 enum StopwatchState { STOPPED, RUNNING };
@@ -227,10 +228,22 @@ void drawLaps() {
   tft.fillRect(0, 65, 320, 170-65, TFT_BLACK);
   tft.setTextFont(2);
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  for (uint8_t i = 0; i < lapCount; ++i) {
-    tft.setCursor(10, 70 + i*20);
+  
+  // Calculate start index to show last DISPLAY_LAPS
+  int startIdx = (lapCount > DISPLAY_LAPS) ? lapCount - DISPLAY_LAPS : 0;
+  
+  for (int i = startIdx; i < lapCount; ++i) {
+    int displayRow = i - startIdx;
+    tft.setCursor(10, 70 + displayRow*20);
     tft.printf("Lap %d: %s (%s)", i+1, formatTime(laps[i].lapTimeMs).c_str(), formatTime(laps[i].totalTimeMs).c_str());
   }
+  
+  if (lapCount > DISPLAY_LAPS) {
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.setCursor(280, 70);
+    tft.printf("%d+", startIdx);
+  }
+  
   if (stopwatchState == STOPPED && lapCount > 0) {
     tft.setCursor(10, 70 + lapCount*20);
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
