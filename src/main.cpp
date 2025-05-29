@@ -13,12 +13,15 @@
 
 #include <TFT_eSPI.h>
 #include <SPI.h>
+#include <WiFi.h>
+#include <Preferences.h>
 
 // Constants and Pin Definitions
 #define BUTTON_START_LAP_PIN 0
 #define BUTTON_STOP_PIN      14
 #define DEBOUNCE_TIME_MS     50    // Reduced debounce time for better responsiveness
 #define DISPLAY_REFRESH_MS   50    // 20Hz refresh rate
+#define WIFI_CONNECT_TIMEOUT_MS 15000 // 15s connect timeout
 
 constexpr uint8_t MAX_LAPS = 5;
 
@@ -34,8 +37,12 @@ void processStop();
 void addLap(uint32_t currentElapsedMs);
 void drawLaps();
 String formatTime(uint32_t ms);
+void connectWiFi();
+void saveWiFiCredentials(const char* ssid, const char* password);
+bool getWiFiCredentials(String &ssid, String &password);
 
 // Global variables
+Preferences preferences;
 TFT_eSPI tft = TFT_eSPI();
 
 volatile bool startLapInterrupt = false;
@@ -73,16 +80,9 @@ void IRAM_ATTR handleStopInterrupt() {
 
 // --------------- Setup -----------------
 void setup() {
-  // Initialize Serial for debugging
+  // Initialize Serial first for debugging
   Serial.begin(115200);
-  
-  // Button setup with explicit GPIO configuration
-  pinMode(BUTTON_START_LAP_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_STOP_PIN, INPUT_PULLUP);
-
-  // Attach interrupts with explicit GPIO numbers
-  attachInterrupt(BUTTON_START_LAP_PIN, handleStartLapInterrupt, FALLING);
-  attachInterrupt(BUTTON_STOP_PIN, handleStopInterrupt, FALLING);
+  Serial.println("Starting setup...");
 
   // Initialize display
   tft.init();
@@ -90,11 +90,26 @@ void setup() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextFont(4);
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  Serial.println("Display initialized");
+
+  // Button setup with explicit GPIO configuration
+  pinMode(BUTTON_START_LAP_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_STOP_PIN, INPUT_PULLUP);
+  Serial.println("Buttons configured");
+
+  // Attach interrupts with explicit GPIO numbers
+  attachInterrupt(BUTTON_START_LAP_PIN, handleStartLapInterrupt, FALLING);
+  attachInterrupt(BUTTON_STOP_PIN, handleStopInterrupt, FALLING);
+  Serial.println("Interrupts attached");
 
   resetStopwatch();
   drawStopwatch(0);
+  Serial.println("Stopwatch initialized");
 
-  // Serial.begin(115200); // debugging indien gewenst
+  // Initialize WiFi last
+  //saveWiFiCredentials("SSID","PASSWORD"); // Uncomment to save credentials
+  connectWiFi();
+
 }
 
 // --------------- Loop -----------------
@@ -127,8 +142,6 @@ void processStartLap() {
     startTimeMs = millis();
     lapCount = 0;
     stopwatchState = RUNNING;
-    // Clear lap display area
-    tft.fillRect(0, 65, 320, 170-65, TFT_BLACK);
   } else if (stopwatchState == RUNNING && lapCount < MAX_LAPS) {
     uint32_t nowMs = millis();
     addLap(nowMs - startTimeMs);
@@ -197,4 +210,71 @@ String formatTime(uint32_t ms) {
   char buffer[16];
   sprintf(buffer, "%02d:%02d:%02d", minutes, seconds, millisec);
   return String(buffer);
+}
+
+// ------------- WiFi Connection Logic ---------------
+
+void saveWiFiCredentials(const char* ssid, const char* password) {
+    preferences.begin("wifi", false);
+    preferences.putString("ssid", ssid);
+    preferences.putString("password", password);
+    preferences.end();
+    Serial.println("WiFi credentials saved");
+}
+
+bool getWiFiCredentials(String &ssid, String &password) {
+    preferences.begin("wifi", true);
+    ssid = preferences.getString("ssid", "");
+    password = preferences.getString("password", "");
+    preferences.end();
+    return ssid.length() > 0 && password.length() > 0;
+}
+
+void showWiFiStatus(const char* message) {
+    tft.fillRect(0, 60, 320, 80, TFT_BLACK);
+    tft.setCursor(10, 70);
+    tft.setTextFont(2);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.print(message);
+}
+
+// Connect using stored credentials
+void connectWiFi() {
+    String stored_ssid, stored_password;
+    
+    if (!getWiFiCredentials(stored_ssid, stored_password)) {
+        Serial.println("No WiFi credentials stored!");
+        showWiFiStatus("No WiFi credentials stored!");
+        // Hier kunnen we later code toevoegen om credentials in te voeren
+        return;
+    }
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(stored_ssid.c_str(), stored_password.c_str());
+    Serial.printf("Connecting to %s\n", stored_ssid.c_str());
+
+    tft.fillRect(0, 60, 320, 80, TFT_BLACK);
+    tft.setCursor(10, 70);
+    tft.setTextFont(2);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.printf("Connecting to %s...", stored_ssid.c_str());
+
+    uint32_t startAttempt = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - startAttempt) < WIFI_CONNECT_TIMEOUT_MS) {
+        delay(250);
+        Serial.print(".");
+        tft.print(".");
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi connected!");
+        Serial.printf("IP address: %s\n", WiFi.localIP().toString().c_str());
+        
+        showWiFiStatus("WiFi connected!");
+        tft.setCursor(10, 100);
+        tft.print(WiFi.localIP());
+    } else {
+        Serial.println("\nWiFi connection failed!");
+        showWiFiStatus("WiFi connection failed!");
+    }
 }
