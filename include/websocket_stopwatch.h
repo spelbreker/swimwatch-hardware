@@ -39,7 +39,11 @@ private:
     // Connection state
     bool wsConnected;
     unsigned long lastReconnectAttempt;
+    unsigned long lastPingTime;
+    unsigned long lastPongTime;
+    int pingMs;
     static const unsigned long RECONNECT_INTERVAL = 5000;
+    static const unsigned long PING_INTERVAL = 10000; // Send ping every 10 seconds
     
     // Stopwatch state
     StopwatchState currentState;
@@ -118,6 +122,7 @@ public:
     String getCurrentEvent();
     String getCurrentHeat();
     const SplitTimeInfo* getSplitTimes();
+    int getPingMs(); // Get current ping time in milliseconds
     
     // Display control
     void clearSplitTimes();

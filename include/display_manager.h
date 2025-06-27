@@ -99,8 +99,8 @@ public:
     void clearLapTimes();
     
     // Status displays (right side)
-    void updateWiFiStatus(const String& status, bool isConnected = false);
-    void updateWebSocketStatus(const String& status, bool isConnected = false);
+    void updateWiFiStatus(const String& status, bool isConnected = false, int rssi = 0);
+    void updateWebSocketStatus(const String& status, bool isConnected = false, int pingMs = -1);
     void updateLaneInfo(uint8_t laneNumber);
     void updateBatteryDisplay(float voltage, uint8_t percentage);
     

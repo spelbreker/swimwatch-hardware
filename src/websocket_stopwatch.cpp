@@ -10,6 +10,9 @@ WebSocketStopwatch::WebSocketStopwatch()
     , useSSL(true)
     , wsConnected(false)
     , lastReconnectAttempt(0)
+    , lastPingTime(0)
+    , lastPongTime(0)
+    , pingMs(-1)
     , currentState(STOPWATCH_STOPPED)
     , startTimeMs(0)
     , elapsedMs(0)
@@ -93,10 +96,19 @@ bool WebSocketStopwatch::isConnected() {
 void WebSocketStopwatch::loop() {
     webSocket.loop();
     
+    unsigned long now = millis();
+    
     // Handle reconnection if needed
-    if (!wsConnected && millis() - lastReconnectAttempt > RECONNECT_INTERVAL) {
-        lastReconnectAttempt = millis();
+    if (!wsConnected && now - lastReconnectAttempt > RECONNECT_INTERVAL) {
+        lastReconnectAttempt = now;
         Serial.println("Attempting WebSocket reconnection...");
+    }
+    
+    // Send ping periodically if connected
+    if (wsConnected && now - lastPingTime > PING_INTERVAL) {
+        lastPingTime = now;
+        webSocket.sendPing();
+        Serial.println("Ping sent");
     }
 }
 
@@ -348,6 +360,12 @@ void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, s
             break;
         }
         
+        case WStype_PONG:
+            lastPongTime = millis();
+            pingMs = lastPongTime - lastPingTime;
+            Serial.printf("Pong received - ping: %dms\n", pingMs);
+            break;
+            
         case WStype_ERROR:
             Serial.printf("WebSocket Error: %s\n", payload);
             break;
@@ -413,4 +431,8 @@ void WebSocketStopwatch::handleEventHeatMessage(JsonDocument& doc) {
 
 void WebSocketStopwatch::handleClearMessage(JsonDocument& doc) {
     clearDisplay();
+}
+
+int WebSocketStopwatch::getPingMs() {
+    return pingMs;
 }

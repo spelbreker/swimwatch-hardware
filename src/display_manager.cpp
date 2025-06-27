@@ -306,8 +306,13 @@ void DisplayManager::clearLapTimes() {
     lapAreaDirty = false;
 }
 
-void DisplayManager::updateWiFiStatus(const String& status, bool isConnected) {
-    String wifiText = "WiFi\\n" + status;
+void DisplayManager::updateWiFiStatus(const String& status, bool isConnected, int rssi) {
+    String wifiText;
+    if (isConnected && rssi != 0) {
+        wifiText = "WIFI\n" + String(rssi) + " dBm";
+    } else {
+        wifiText = "WIFI\n" + status;
+    }
     
     if (wifiText != lastWiFiStatus || wifiAreaDirty) {
         clearArea(STATUS_AREA_X, AREA_WIFI_STATUS_Y, STATUS_AREA_WIDTH, AREA_WIFI_STATUS_HEIGHT);
@@ -325,8 +330,15 @@ void DisplayManager::updateWiFiStatus(const String& status, bool isConnected) {
     }
 }
 
-void DisplayManager::updateWebSocketStatus(const String& status, bool isConnected) {
-    String wsText = "WebSocket\\n" + status;
+void DisplayManager::updateWebSocketStatus(const String& status, bool isConnected, int pingMs) {
+    String wsText;
+    if (isConnected && pingMs >= 0) {
+        wsText = "WS\n" + String(pingMs) + "ms";
+    } else if (isConnected) {
+        wsText = "WS\nConnected";
+    } else {
+        wsText = "WS\n" + status;
+    }
     
     if (wsText != lastWebSocketStatus || websocketAreaDirty) {
         clearArea(STATUS_AREA_X, AREA_WEBSOCKET_STATUS_Y, STATUS_AREA_WIDTH, AREA_WEBSOCKET_STATUS_HEIGHT);
@@ -345,7 +357,7 @@ void DisplayManager::updateWebSocketStatus(const String& status, bool isConnecte
 }
 
 void DisplayManager::updateLaneInfo(uint8_t laneNumber) {
-    String laneText = "Lane\\n" + String(laneNumber);
+    String laneText = "Lane\n" + String(laneNumber);
     
     if (laneText != lastLaneInfo || laneAreaDirty) {
         clearArea(STATUS_AREA_X, AREA_LANE_INFO_Y, STATUS_AREA_WIDTH, AREA_LANE_INFO_HEIGHT);
@@ -364,7 +376,7 @@ void DisplayManager::updateLaneInfo(uint8_t laneNumber) {
 }
 
 void DisplayManager::updateBatteryDisplay(float voltage, uint8_t percentage) {
-    String batteryText = "Battery\\n" + String(percentage) + "%";
+    String batteryText = "Battery\n" + String(percentage) + "%";
     
     if (batteryText != lastBatteryString || batteryAreaDirty) {
         clearArea(STATUS_AREA_X, AREA_BATTERY_STATUS_Y, STATUS_AREA_WIDTH, AREA_BATTERY_STATUS_HEIGHT);

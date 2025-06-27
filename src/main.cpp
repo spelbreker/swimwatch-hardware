@@ -185,7 +185,8 @@ void initializeNormalOperation() {
     display.clearScreen();
     display.drawBorders();
     display.updateLaneInfo(config.laneNumber);
-    display.updateWiFiStatus("Connected", true);
+    int rssi = WiFi.RSSI();
+    display.updateWiFiStatus("Connected", true, rssi);
     
     // Setup stopwatch callbacks
     stopwatch.onStateChanged = onStopwatchStateChanged;
@@ -302,14 +303,16 @@ void checkConnections() {
         display.updateWiFiStatus("Disconnected", false);
         // Could implement reconnection logic here
     } else {
-        display.updateWiFiStatus("Connected", true);
+        int rssi = WiFi.RSSI();
+        display.updateWiFiStatus("Connected", true, rssi);
     }
     
     // Check WebSocket connection
     if (!stopwatch.isConnected()) {
         display.updateWebSocketStatus("Disconnected", false);
     } else {
-        display.updateWebSocketStatus("Connected", true);
+        int ping = stopwatch.getPingMs();
+        display.updateWebSocketStatus("Connected", true, ping);
     }
 }
 
@@ -345,7 +348,8 @@ void onLapAdded(uint8_t lapNumber, uint32_t lapTime, uint32_t totalTime) {
 void onConnectionChanged(bool connected) {
     if (connected) {
         Serial.println("WebSocket connected successfully");
-        display.updateWebSocketStatus("Connected", true);
+        int ping = stopwatch.getPingMs();
+        display.updateWebSocketStatus("Connected", true, ping);
     } else {
         Serial.println("WebSocket disconnected");
         display.updateWebSocketStatus("Disconnected", false);
