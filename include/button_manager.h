@@ -10,6 +10,7 @@
 
 // Button timing
 #define DEBOUNCE_TIME_MS 100
+#define DEBOUNCE_TIME_GPIO2_MS 300  // Extended debounce for GPIO2 split button
 
 // Button states
 enum ButtonEvent {

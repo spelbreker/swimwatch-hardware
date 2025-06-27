@@ -42,8 +42,11 @@ private:
     unsigned long lastPingTime;
     unsigned long lastPongTime;
     int pingMs;
+    int bestPingMs; // Track best (lowest) ping time for more accurate lag compensation
+    uint8_t pingSampleCount; // Number of ping samples collected
     static const unsigned long RECONNECT_INTERVAL = 5000;
     static const unsigned long PING_INTERVAL = 10000; // Send ping every 10 seconds
+    static const uint8_t MAX_PING_SAMPLES = 10; // Number of samples to consider for best ping
     
     // Stopwatch state
     StopwatchState currentState;

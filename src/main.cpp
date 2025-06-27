@@ -1,10 +1,23 @@
 /**
- * LilyGO T-Display S3 Stopwatch - Captive Portal Flow
+ * LilyGO T-Display S3 Stopwatch - Remote Split Timer
  * 
  * Hardware:
- * - BUTTON1 (Start/Stop): GPIO0 (active LOW, internal pullup)
- * - BUTTON2 (Reset):      GPIO14 (active LOW, internal pullup)
+ * - BUTTON1 (GPIO0):  No local action (WebSocket start only)
+ * - BUTTON2 (GPIO14): Reset (when stopped)
+ * - BUTTON3 (GPIO2):  Create split time (when running)
  * - Display: ST7789V via TFT_eSPI
+ * 
+ * Functionality:
+ * - Stopwatch starts ONLY via WebSocket server command
+ * - GPIO2 button creates split times and sends to server
+ * - Display shows last 3 split times in rolling fashion
+ * - Reset via GPIO14 when stopped
+ * 
+ * WebSocket Messages:
+ * - Receives: {"type":"start","timestamp":...} - Start stopwatch
+ * - Receives: {"type":"reset"} - Reset stopwatch  
+ * - Receives: {"type":"time_sync","server_time":...} - Time sync
+ * - Sends: {"type":"split","lane":X,"time-ms":...,"time":"MM:SS:MS"} - Split time
  * 
  * Flow:
  * 1. Check if WiFi credentials exist in preferences
@@ -12,12 +25,8 @@
  * 3. If no credentials or connection fails, start captive portal
  * 4. After successful WiFi setup, restart device
  * 5. On restart, proceed with normal stopwatch operation
- * 
- * Features:
- * - Captive portal for initial WiFi and server configuration
- * - Automatic restart after configuration
- * - Persistent configuration storage in preferences
- * - Clean separation between setup and operation modes
+ * 6. Wait for WebSocket start command to begin timing
+ * 7. Use GPIO2 to create split times during operation
  */
 
 #include <Arduino.h>
@@ -44,6 +53,16 @@ enum AppMode {
 AppMode currentMode = MODE_SETUP;
 bool systemInitialized = false;
 
+// Split time tracking for display (last 3 splits)
+struct SplitTimeDisplay {
+    uint8_t splitNumber;
+    uint32_t totalTime;
+    String formattedTime;
+    bool valid;
+};
+
+SplitTimeDisplay lastSplits[3] = {{0, 0, "", false}, {0, 0, "", false}, {0, 0, "", false}};
+
 // Configuration loaded from preferences
 struct AppConfig {
     String wsServer;
@@ -60,6 +79,7 @@ void initializeNormalOperation();
 void handleButtonEvents();
 void updateDisplay();
 void checkConnections();
+void clearSplitDisplay();
 
 // Normal mode timing variables
 unsigned long lastDisplayUpdate = 0;
@@ -261,22 +281,27 @@ void handleButtonEvents() {
     
     switch (event) {
         case BUTTON_START_LAP_PRESSED:
+            // GPIO0 - Not used for local control (only WebSocket start)
+            Serial.println("GPIO0 pressed - No local action (WebSocket start only)");
+            break;
+            
         case BUTTON_START_2_PRESSED:
-            // Start/Stop functionality
-            if (stopwatch.getState() == STOPWATCH_STOPPED) {
-                stopwatch.start();
-                Serial.println("Stopwatch started via button");
-            } else if (stopwatch.getState() == STOPWATCH_RUNNING) {
-                stopwatch.stop();
-                Serial.println("Stopwatch stopped via button");
+            // GPIO2 - Create split time when running
+            if (stopwatch.getState() == STOPWATCH_RUNNING) {
+                stopwatch.addLap();
+                Serial.println("Split time created via GPIO2 button");
+            } else {
+                Serial.println("GPIO2 pressed - Stopwatch not running, no split time created");
             }
             break;
             
         case BUTTON_STOP_PRESSED:
-            // Reset functionality
-            if (stopwatch.getState() != STOPWATCH_RUNNING) {
+            // GPIO14 - Reset functionality (when stopped)
+            if (stopwatch.getState() == STOPWATCH_STOPPED) {
                 stopwatch.reset();
-                Serial.println("Stopwatch reset via button");
+                Serial.println("Stopwatch reset via GPIO14 button");
+            } else {
+                Serial.println("GPIO14 pressed - Stopwatch running, no reset action");
             }
             break;
             
@@ -294,6 +319,26 @@ void updateDisplay() {
     uint32_t elapsedTime = stopwatch.getElapsedTime();
     bool isRunning = (stopwatch.getState() == STOPWATCH_RUNNING);
     display.updateStopwatchDisplay(elapsedTime, isRunning);
+    
+    // Show status when not running
+    if (!isRunning && elapsedTime == 0) {
+        // Only show this when truly stopped/reset (not just paused)
+        static unsigned long lastStatusToggle = 0;
+        static bool showStatus = true;
+        
+        if (millis() - lastStatusToggle > 2000) { // Toggle every 2 seconds
+            lastStatusToggle = millis();
+            showStatus = !showStatus;
+            
+            if (showStatus) {
+                display.showStartupMessage("Ready - Waiting for start...");
+            } else {
+                display.clearStartupMessage();
+            }
+        }
+    } else {
+        display.clearStartupMessage();
+    }
 }
 
 void checkConnections() {
@@ -323,6 +368,8 @@ void onStopwatchStateChanged(StopwatchState newState) {
     switch (newState) {
         case STOPWATCH_STOPPED:
             Serial.println("Stopwatch stopped");
+            // Clear split display when stopped/reset
+            clearSplitDisplay();
             break;
         case STOPWATCH_RUNNING:
             Serial.println("Stopwatch started");
@@ -334,14 +381,25 @@ void onStopwatchStateChanged(StopwatchState newState) {
 }
 
 void onLapAdded(uint8_t lapNumber, uint32_t lapTime, uint32_t totalTime) {
-    Serial.printf("Lap %d added - Lap: %s, Total: %s\n", 
+    Serial.printf("Split %d added - Total time: %s\n", 
                   lapNumber, 
-                  stopwatch.formatTime(lapTime).c_str(),
                   stopwatch.formatTime(totalTime).c_str());
     
-    // Update lap display (only show first 3 laps)
-    if (lapNumber <= 3) {
-        display.updateLapTime(lapNumber, stopwatch.formatTime(lapTime));
+    // Shift existing splits up to make room for new one
+    lastSplits[0] = lastSplits[1];
+    lastSplits[1] = lastSplits[2];
+    
+    // Add new split to the end
+    lastSplits[2] = {lapNumber, totalTime, stopwatch.formatTime(totalTime), true};
+    
+    // Update display with last 3 splits
+    for (int i = 0; i < 3; i++) {
+        if (lastSplits[i].valid) {
+            String displayText = "S" + String(lastSplits[i].splitNumber) + ": " + lastSplits[i].formattedTime;
+            display.updateLapTime(i + 1, displayText);
+        } else {
+            display.updateLapTime(i + 1, "");
+        }
     }
 }
 
@@ -381,4 +439,14 @@ void onSplitTimeReceived(uint8_t lane, const String& time) {
 void onDisplayClear() {
     Serial.println("Display clear requested");
     display.clearLapTimes();
+    clearSplitDisplay();
+}
+
+void clearSplitDisplay() {
+    // Clear the split times tracking
+    for (int i = 0; i < 3; i++) {
+        lastSplits[i] = {0, 0, "", false};
+        display.updateLapTime(i + 1, "");
+    }
+    Serial.println("Split display cleared");
 }

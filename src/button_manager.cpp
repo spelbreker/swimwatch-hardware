@@ -33,6 +33,8 @@ bool ButtonManager::init() {
     Serial.println("Button interrupts attached");
     Serial.printf("Button pins - Start/Lap: %d, Stop: %d, Start2: %d\n", 
                   BUTTON_START_LAP_PIN, BUTTON_STOP_PIN, BUTTON_START_2_PIN);
+    Serial.printf("Debounce times - Standard: %dms, GPIO2: %dms\n", 
+                  DEBOUNCE_TIME_MS, DEBOUNCE_TIME_GPIO2_MS);
     
     return true;
 }
@@ -117,8 +119,9 @@ void ButtonManager::handleStopISR() {
 void ButtonManager::handleStart2ISR() {
     uint32_t now = millis();
     // Additional check for HIGH state to filter noise
+    // Use extended debounce time for GPIO2 split button
     if (digitalRead(BUTTON_START_2_PIN) == HIGH && 
-        now - lastStart2Interrupt > DEBOUNCE_TIME_MS) {
+        now - lastStart2Interrupt > DEBOUNCE_TIME_GPIO2_MS) {
         start2Interrupt = true;
         lastStart2Interrupt = now;
     }

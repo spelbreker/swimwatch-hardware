@@ -13,6 +13,8 @@ WebSocketStopwatch::WebSocketStopwatch()
     , lastPingTime(0)
     , lastPongTime(0)
     , pingMs(-1)
+    , bestPingMs(-1)
+    , pingSampleCount(0)
     , currentState(STOPWATCH_STOPPED)
     , startTimeMs(0)
     , elapsedMs(0)
@@ -272,17 +274,20 @@ void WebSocketStopwatch::sendSplitTime(uint32_t elapsedTime) {
         return;
     }
     
+    uint64_t splitServerTime = serverStartTimeMs + elapsedTime;
+    
     StaticJsonDocument<300> doc;
     doc["type"] = WS_MSG_SPLIT;
     doc["lane"] = String(laneNumber);
-    doc["time-ms"] = serverStartTimeMs + elapsedTime;
+    doc["time-ms"] = splitServerTime;
     doc["time"] = formatTime(elapsedTime);
     
     String message;
     serializeJson(doc, message);
     sendMessage(message);
     
-    Serial.printf("Split time sent for lane %d: %s\n", laneNumber, message.c_str());
+    Serial.printf("Split time sent for lane %d: elapsed=%s, server_time=%llu (compensated)\n", 
+                  laneNumber, formatTime(elapsedTime).c_str(), splitServerTime);
 }
 
 void WebSocketStopwatch::sendMessage(const String& message) {
@@ -294,9 +299,25 @@ void WebSocketStopwatch::sendMessage(const String& message) {
 
 void WebSocketStopwatch::updateTimeOffset(uint64_t serverTime) {
     uint64_t localTime = millis();
-    timeOffset = (int64_t)serverTime - (int64_t)localTime;
     
-    Serial.printf("Time offset updated: %lld ms\n", timeOffset);
+    // Apply lag compensation using half of the best ping time for better accuracy
+    int64_t lagCompensation = 0;
+    int pingToUse = (bestPingMs > 0 && pingSampleCount >= 3) ? bestPingMs : pingMs;
+    
+    if (pingToUse > 0) {
+        lagCompensation = pingToUse / 2;  // Half of round-trip time
+        Serial.printf("Lag compensation: %lld ms (using %s ping: %d ms)\n", 
+                      lagCompensation, 
+                      (pingToUse == bestPingMs) ? "best" : "current", 
+                      pingToUse);
+    }
+    
+    // Calculate time offset with lag compensation
+    // Server time + lag compensation - local time = offset
+    timeOffset = (int64_t)(serverTime + lagCompensation) - (int64_t)localTime;
+    
+    Serial.printf("Time sync - Server: %llu, Local: %llu, Lag comp: %lld ms, Offset: %lld ms\n", 
+                  serverTime, localTime, lagCompensation, timeOffset);
     
     if (onTimeSync) {
         onTimeSync(true);
@@ -327,6 +348,12 @@ void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, s
         case WStype_CONNECTED:
             Serial.printf("WebSocket Connected to: %s\n", payload);
             wsConnected = true;
+            
+            // Reset ping statistics for fresh measurements on new connection
+            bestPingMs = -1;
+            pingSampleCount = 0;
+            Serial.println("Ping statistics reset for new connection");
+            
             if (onConnectionChanged) {
                 onConnectionChanged(true);
             }
@@ -363,7 +390,16 @@ void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, s
         case WStype_PONG:
             lastPongTime = millis();
             pingMs = lastPongTime - lastPingTime;
-            Serial.printf("Pong received - ping: %dms\n", pingMs);
+            
+            // Track best ping time for more accurate lag compensation
+            if (bestPingMs == -1 || pingMs < bestPingMs) {
+                bestPingMs = pingMs;
+                Serial.printf("New best ping: %dms\n", bestPingMs);
+            }
+            pingSampleCount++;
+            
+            Serial.printf("Pong received - ping: %dms, best: %dms, samples: %d\n", 
+                         pingMs, bestPingMs, pingSampleCount);
             break;
             
         case WStype_ERROR:
