@@ -12,6 +12,7 @@
  * - GPIO2 button creates split times and sends to server
  * - Display shows last 3 split times in rolling fashion
  * - Reset via GPIO14 when stopped
+ * - Uses internal ESP32 timer (millis()) for accurate timing
  * 
  * WebSocket Messages:
  * - Receives: {"type":"start","timestamp":...} - Start stopwatch
@@ -217,16 +218,7 @@ void initializeNormalOperation() {
     stopwatch.onSplitTimeReceived = onSplitTimeReceived;
     stopwatch.onDisplayClear = onDisplayClear;
     
-    // Initialize NTP
-    display.showStartupMessage("Syncing time...");
-    if (connectivity.initNTP()) {
-        Serial.println("NTP synchronization successful");
-        display.showStartupMessage("Time synchronized");
-    } else {
-        Serial.println("NTP synchronization failed");
-        display.showStartupMessage("Time sync failed");
-    }
-    delay(1000);
+
     
     // Initialize WebSocket connection
     display.showStartupMessage("Connecting to server...");

@@ -176,7 +176,6 @@ ConnectivityManager::ConnectivityManager()
 ### Initialization
 ```cpp
 bool ConnectivityManager::initWiFi(DisplayManager& display)
-bool ConnectivityManager::initNTP()
 ```
 
 **Parameters**:
@@ -203,18 +202,6 @@ void ConnectivityManager::clearConfig()
 - `wsServer`: WebSocket server address
 - `wsPort`: WebSocket port number
 - `lane`: Lane identifier string
-
-### Time Management
-```cpp
-unsigned long ConnectivityManager::getCurrentTime()
-String ConnectivityManager::getFormattedTime()
-bool ConnectivityManager::isNTPSynced()
-```
-
-**Returns**:
-- `getCurrentTime()`: Unix timestamp in seconds
-- `getFormattedTime()`: Human-readable time string
-- `isNTPSynced()`: NTP synchronization status
 
 ### Configuration Portal
 ```cpp
@@ -386,7 +373,7 @@ static const uint32_t NTP_SYNC_INTERVAL = 3600000;      // 1 hour
 // Approximate memory usage per module
 DisplayManager:     ~2KB RAM (cached strings, display buffer)
 ButtonManager:      ~1KB RAM (state tracking, debounce)
-ConnectivityManager: ~4KB RAM (WiFi stack, NTP client)
+ConnectivityManager: ~3KB RAM (WiFi stack)
 WebSocketStopwatch: ~6KB RAM (WebSocket client, JSON parsing)
 ```
 
@@ -394,7 +381,7 @@ WebSocketStopwatch: ~6KB RAM (WebSocket client, JSON parsing)
 - **Display Updates**: ±10ms
 - **Button Response**: <10ms (interrupt-driven)
 - **WebSocket Ping**: Measured and compensated
-- **NTP Synchronization**: ±50ms
+- **Internal Timer**: Uses millis() with ±1ms accuracy
 
 ## 🛠️ Build Configuration
 
@@ -403,8 +390,6 @@ WebSocketStopwatch: ~6KB RAM (WebSocket client, JSON parsing)
 lib_deps = 
     links2004/WebSockets @ ^2.4.1
     bblanchon/ArduinoJson @ ^6.21.3
-    arduino-libraries/NTPClient @ ^3.2.1
-    tzapu/WiFiManager @ ^2.0.16-rc.2
 ```
 
 ### Compiler Flags
@@ -428,9 +413,8 @@ build_flags =
 #define ERROR_DISPLAY_INIT     -1
 #define ERROR_WIFI_CONNECT     -2
 #define ERROR_WEBSOCKET_FAIL   -3
-#define ERROR_NTP_SYNC         -4
-#define ERROR_CONFIG_LOAD      -5
-#define ERROR_CONFIG_SAVE      -6
+#define ERROR_CONFIG_LOAD      -4
+#define ERROR_CONFIG_SAVE      -5
 ```
 
 ### Debug Levels

@@ -7,7 +7,7 @@ A comprehensive stopwatch system for the LilyGO T-Display S3 (ESP32-S3) with Wi-
 - **Remote-Controlled Stopwatch**: Start/reset via WebSocket commands
 - **Split Timer**: Record multiple split times during operation
 - **Wi-Fi Connectivity**: Auto-connect with configuration portal fallback
-- **Real-time Synchronization**: NTP and WebSocket time sync with lag compensation
+- **Real-time Synchronization**: WebSocket time sync with lag compensation
 - **Modular Design**: Clean, maintainable code architecture
 - **Visual Status Display**: Real-time WiFi, WebSocket, lane, and battery status
 
@@ -35,7 +35,6 @@ graph TB
     subgraph "Network"
         L[WiFi Network]
         M[WebSocket Server]
-        N[NTP Server]
     end
     
     A --> B
@@ -233,7 +232,6 @@ classDiagram
     
     class ConnectivityManager {
         +initWiFi()
-        +initNTP()
         +saveConfig()
         +loadConfig()
     }
@@ -256,10 +254,9 @@ classDiagram
 ### Key Components
 
 #### 1. ConnectivityManager
-- WiFi connection management
-- NTP time synchronization
-- Configuration storage (LittleFS)
-- WiFiManager integration for setup
+- WiFi connection management  
+- Configuration storage (Preferences)
+- Captive portal setup for configuration
 
 #### 2. DisplayManager
 - Modular display areas
@@ -290,7 +287,6 @@ framework = arduino
 lib_deps = 
     links2004/WebSockets @ ^2.4.1
     bblanchon/ArduinoJson @ ^6.21.3
-    arduino-libraries/NTPClient @ ^3.2.1
 ```
 
 ### Project Structure
@@ -335,7 +331,7 @@ pio device monitor
 | GPIO2 not working | Missing pulldown | Add 1kΩ resistor to GND |
 | WebSocket fails | Server unreachable | Check server address/port |
 | Display garbled | TFT_eSPI config | Verify pin assignments |
-| Time drift | No NTP sync | Check internet connection |
+| Time drift | Timer accuracy | Internal ESP32 timer is accurate |
 
 ### Reset Procedures
 
@@ -363,7 +359,7 @@ Monitor serial output at 115200 baud for:
 - **Display Update**: 100ms intervals
 - **Button Response**: <10ms (interrupt-driven)
 - **WebSocket Latency**: Auto-compensated
-- **NTP Sync**: ±50ms accuracy
+- **Internal Timer**: ±1ms accuracy using millis()
 
 ### Power Consumption
 - **Active Mode**: ~150mA (display on)

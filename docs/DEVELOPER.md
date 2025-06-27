@@ -48,15 +48,11 @@ graph TD
         F[TFT_eSPI]
         G[WebSockets]
         H[ArduinoJson]
-        I[WiFiManager]
-        J[NTPClient]
     end
     
     B --> F
     E --> G
     E --> H
-    D --> I
-    D --> J
 ```
 
 ## 🛠️ Development Environment Setup
@@ -77,7 +73,7 @@ stopwatch/
 ├── include/                # Header files
 │   ├── display_manager.h   # Display control
 │   ├── button_manager.h    # Hardware buttons
-│   ├── connectivity.h      # WiFi/NTP management
+│   ├── connectivity.h      # WiFi management
 │   └── websocket_stopwatch.h # WebSocket & timing
 ├── src/                    # Implementation files
 │   ├── main.cpp           # Main application
@@ -117,8 +113,6 @@ build_flags =
 lib_deps = 
     links2004/WebSockets @ ^2.4.1
     bblanchon/ArduinoJson @ ^6.21.3
-    arduino-libraries/NTPClient @ ^3.2.1
-    tzapu/WiFiManager @ ^2.0.16-rc.2
 
 ; Monitor settings
 monitor_speed = 115200

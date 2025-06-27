@@ -5,11 +5,7 @@ const char* ConnectivityManager::CONFIG_PORTAL_SSID = "T-Display-S3-Setup";
 const char* ConnectivityManager::CONFIG_PORTAL_PASSWORD = "stopwatch123";
 
 ConnectivityManager::ConnectivityManager() : 
-    ntpUDP(),
-    timeClient(ntpUDP, "pool.ntp.org", 0, 60000),
     wifiConnected(false),
-    ntpSynced(false),
-    lastNtpSync(0),
     server(nullptr),
     dnsServer(nullptr),
     portalRunning(false) {
@@ -211,59 +207,6 @@ void ConnectivityManager::updateWiFiStatus() {
     wifiConnected = (WiFi.status() == WL_CONNECTED);
 }
 
-bool ConnectivityManager::initNTP() {
-    if (!wifiConnected) {
-        Serial.println("Cannot initialize NTP: WiFi not connected");
-        return false;
-    }
-    
-    Serial.println("Initializing NTP client...");
-    timeClient.begin();
-    return syncTimeWithNTP();
-}
-
-bool ConnectivityManager::syncTimeWithNTP() {
-    if (!wifiConnected) {
-        return false;
-    }
-    
-    Serial.println("Syncing time with NTP server...");
-    
-    int attempts = 0;
-    while (!timeClient.update() && attempts < 10) {
-        delay(1000);
-        attempts++;
-        Serial.print(".");
-    }
-    
-    if (timeClient.isTimeSet()) {
-        ntpSynced = true;
-        lastNtpSync = millis();
-        Serial.println();
-        Serial.println("NTP time synchronized successfully");
-        return true;
-    } else {
-        Serial.println();
-        Serial.println("Failed to sync with NTP server");
-        return false;
-    }
-}
-
-unsigned long ConnectivityManager::getEpochTime() {
-    if (!ntpSynced) return 0;
-    
-    // Check if we need to resync
-    if (millis() - lastNtpSync > NTP_SYNC_INTERVAL) {
-        syncTimeWithNTP();
-    }
-    
-    return timeClient.getEpochTime();
-}
-
-bool ConnectivityManager::isTimeSynced() {
-    return ntpSynced;
-}
-
 bool ConnectivityManager::saveConfig(const String& key, const String& value) {
     if (!preferences.begin("stopwatch", false)) {
         Serial.println("Failed to open preferences for writing");
@@ -336,19 +279,6 @@ String ConnectivityManager::getConnectionStatus() {
     
     // Just return connected status without trying to get IP or SSID
     return "WiFi connected";
-}
-
-String ConnectivityManager::getTimeStatus() {
-    if (!wifiConnected) {
-        return "WiFi not connected";
-    }
-    
-    if (!ntpSynced) {
-        return "Time not synchronized";
-    }
-    
-    unsigned long epoch = getEpochTime();
-    return String("Time synced (") + String(epoch) + ")";
 }
 
 // ULTRA-SAFE version of getLocalIP - return zero IP if any issue
