@@ -5,10 +5,11 @@
 #include <ArduinoJson.h>
 
 // WebSocket message types
+#define WS_MSG_PING "ping"
+#define WS_MSG_PONG "pong"
 #define WS_MSG_START "start"
 #define WS_MSG_RESET "reset"
 #define WS_MSG_SPLIT "split"
-#define WS_MSG_TIME_SYNC "time_sync"
 #define WS_MSG_EVENT_HEAT "event-heat"
 #define WS_MSG_CLEAR "clear"
 
@@ -44,16 +45,16 @@ private:
     int pingMs;
     int bestPingMs; // Track best (lowest) ping time for more accurate lag compensation
     uint8_t pingSampleCount; // Number of ping samples collected
+    int64_t serverTimeOffset; // Client time offset from server time
+    bool timeSync; // Whether time synchronization is active
     static const unsigned long RECONNECT_INTERVAL = 5000;
-    static const unsigned long PING_INTERVAL = 10000; // Send ping every 10 seconds
+    static const unsigned long PING_INTERVAL = 5000; // Send ping every 5 seconds (per new spec)
     static const uint8_t MAX_PING_SAMPLES = 10; // Number of samples to consider for best ping
     
     // Stopwatch state
     StopwatchState currentState;
     uint32_t startTimeMs;
     uint32_t elapsedMs;
-    uint64_t serverStartTimeMs;
-    int64_t timeOffset; // Offset between local and server time
     
     // Event and Heat information
     String currentEvent;
@@ -84,18 +85,20 @@ private:
     void handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length);
     void handleStartMessage(JsonDocument& doc);
     void handleResetMessage(JsonDocument& doc);
-    void handleTimeSyncMessage(JsonDocument& doc);
     void handleSplitMessage(JsonDocument& doc);
     void handleEventHeatMessage(JsonDocument& doc);
     void handleClearMessage(JsonDocument& doc);
+    void handlePingMessage(JsonDocument& doc);
+    void handlePongMessage(JsonDocument& doc);
     
-    // Message sending
+    // Network and timing
     void sendSplitTime(uint32_t elapsedTime);
     void sendMessage(const String& message);
+    void sendJsonPing(); // Send JSON-based ping message
     
     // Time synchronization
-    void updateTimeOffset(uint64_t serverTime);
     uint64_t getServerTime();
+    uint64_t getSynchronizedTime(); // Get current time with server offset applied
     
 public:
     WebSocketStopwatch();

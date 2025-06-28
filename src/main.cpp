@@ -15,10 +15,12 @@
  * - Uses internal ESP32 timer (millis()) for accurate timing
  * 
  * WebSocket Messages:
- * - Receives: {"type":"start","timestamp":...} - Start stopwatch
- * - Receives: {"type":"reset"} - Reset stopwatch  
+ * - Receives: {"type":"start","event":1,"heat":2,"timestamp":...} - Start stopwatch
+ * - Receives: {"type":"reset","timestamp":...} - Reset stopwatch  
  * - Receives: {"type":"time_sync","server_time":...} - Time sync
- * - Sends: {"type":"split","lane":X,"time-ms":...,"time":"MM:SS:MS"} - Split time
+ * - Receives: {"type":"pong","client_ping_time":...,"server_time":...} - Ping response
+ * - Sends: {"type":"ping","time":...} - Time sync ping
+ * - Sends: {"type":"split","lane":X,"timestamp":...} - Split time
  * 
  * Flow:
  * 1. Check if WiFi credentials exist in preferences

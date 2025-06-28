@@ -15,11 +15,11 @@ WebSocketStopwatch::WebSocketStopwatch()
     , pingMs(-1)
     , bestPingMs(-1)
     , pingSampleCount(0)
+    , serverTimeOffset(0)
+    , timeSync(false)
     , currentState(STOPWATCH_STOPPED)
     , startTimeMs(0)
     , elapsedMs(0)
-    , serverStartTimeMs(0)
-    , timeOffset(0)
     , lapCount(0)
     , laneNumber(9)
     , lastDisplayUpdate(0)
@@ -106,11 +106,23 @@ void WebSocketStopwatch::loop() {
         Serial.println("Attempting WebSocket reconnection...");
     }
     
-    // Send ping periodically if connected
-    if (wsConnected && now - lastPingTime > PING_INTERVAL) {
+    // Send JSON ping with appropriate interval based on sync state
+    unsigned long pingInterval = PING_INTERVAL;
+    
+    // Initial rapid ping sequence (5 pings at 500ms intervals) if not synced
+    if (!timeSync && pingSampleCount < 5) {
+        pingInterval = 500; // 500ms for rapid initial sync
+    }
+    
+    if (wsConnected && now - lastPingTime > pingInterval) {
         lastPingTime = now;
-        webSocket.sendPing();
-        Serial.println("Ping sent");
+        sendJsonPing();
+        
+        if (!timeSync && pingSampleCount < 5) {
+            Serial.printf("Initial ping %d/5 sent\n", pingSampleCount + 1);
+        } else {
+            Serial.println("Regular JSON ping sent");
+        }
     }
 }
 
@@ -146,7 +158,6 @@ void WebSocketStopwatch::reset() {
     startTimeMs = 0;
     elapsedMs = 0;
     lapCount = 0;
-    serverStartTimeMs = 0;
     
     // Clear lap data
     for (uint8_t i = 0; i < MAX_LAPS; i++) {
@@ -210,7 +221,7 @@ const LapData* WebSocketStopwatch::getLaps() {
 }
 
 bool WebSocketStopwatch::hasServerTime() {
-    return serverStartTimeMs > 0;
+    return timeSync; // Return true if we have time synchronization active
 }
 
 String WebSocketStopwatch::getCurrentEvent() {
@@ -245,9 +256,6 @@ void WebSocketStopwatch::clearDisplay() {
 }
 
 void WebSocketStopwatch::handleRemoteStart(uint64_t serverTime) {
-    serverStartTimeMs = serverTime;
-    updateTimeOffset(serverTime);
-    
     if (currentState != STOPWATCH_RUNNING) {
         start();
         Serial.printf("Remote start received with server time: %llu\n", serverTime);
@@ -270,24 +278,24 @@ String WebSocketStopwatch::formatTime(uint32_t milliseconds) {
 }
 
 void WebSocketStopwatch::sendSplitTime(uint32_t elapsedTime) {
-    if (!wsConnected || serverStartTimeMs == 0) {
+    if (!wsConnected) {
         return;
     }
     
-    uint64_t splitServerTime = serverStartTimeMs + elapsedTime;
+    // Use synchronized time for split timestamp
+    uint64_t splitTimestamp = getSynchronizedTime();
     
     StaticJsonDocument<300> doc;
     doc["type"] = WS_MSG_SPLIT;
-    doc["lane"] = String(laneNumber);
-    doc["time-ms"] = splitServerTime;
-    doc["time"] = formatTime(elapsedTime);
+    doc["lane"] = laneNumber; // Use integer instead of string per new spec
+    doc["timestamp"] = splitTimestamp; // Use synchronized timestamp
     
     String message;
     serializeJson(doc, message);
     sendMessage(message);
     
-    Serial.printf("Split time sent for lane %d: elapsed=%s, server_time=%llu (compensated)\n", 
-                  laneNumber, formatTime(elapsedTime).c_str(), splitServerTime);
+    Serial.printf("Split time sent for lane %d: timestamp=%llu (synchronized)\n", 
+                  laneNumber, splitTimestamp);
 }
 
 void WebSocketStopwatch::sendMessage(const String& message) {
@@ -297,35 +305,9 @@ void WebSocketStopwatch::sendMessage(const String& message) {
     }
 }
 
-void WebSocketStopwatch::updateTimeOffset(uint64_t serverTime) {
-    uint64_t localTime = millis();
-    
-    // Apply lag compensation using half of the best ping time for better accuracy
-    int64_t lagCompensation = 0;
-    int pingToUse = (bestPingMs > 0 && pingSampleCount >= 3) ? bestPingMs : pingMs;
-    
-    if (pingToUse > 0) {
-        lagCompensation = pingToUse / 2;  // Half of round-trip time
-        Serial.printf("Lag compensation: %lld ms (using %s ping: %d ms)\n", 
-                      lagCompensation, 
-                      (pingToUse == bestPingMs) ? "best" : "current", 
-                      pingToUse);
-    }
-    
-    // Calculate time offset with lag compensation
-    // Server time + lag compensation - local time = offset
-    timeOffset = (int64_t)(serverTime + lagCompensation) - (int64_t)localTime;
-    
-    Serial.printf("Time sync - Server: %llu, Local: %llu, Lag comp: %lld ms, Offset: %lld ms\n", 
-                  serverTime, localTime, lagCompensation, timeOffset);
-    
-    if (onTimeSync) {
-        onTimeSync(true);
-    }
-}
-
 uint64_t WebSocketStopwatch::getServerTime() {
-    return millis() + timeOffset;
+    // Use the synchronized time from ping/pong 
+    return getSynchronizedTime();
 }
 
 // Static WebSocket event wrapper
@@ -349,10 +331,15 @@ void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, s
             Serial.printf("WebSocket Connected to: %s\n", payload);
             wsConnected = true;
             
-            // Reset ping statistics for fresh measurements on new connection
+            // Reset synchronization state for fresh measurements on new connection
             bestPingMs = -1;
             pingSampleCount = 0;
-            Serial.println("Ping statistics reset for new connection");
+            timeSync = false;
+            serverTimeOffset = 0;
+            Serial.println("Time sync reset for new connection - starting initial ping sequence");
+            
+            // Start initial rapid ping sequence (per new spec)
+            lastPingTime = 0; // Force immediate ping
             
             if (onConnectionChanged) {
                 onConnectionChanged(true);
@@ -371,12 +358,14 @@ void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, s
             }
             
             const char* msgType = doc["type"];
-            if (strcmp(msgType, WS_MSG_START) == 0) {
+            if (strcmp(msgType, WS_MSG_PING) == 0) {
+                handlePingMessage(doc);
+            } else if (strcmp(msgType, WS_MSG_PONG) == 0) {
+                handlePongMessage(doc);
+            } else if (strcmp(msgType, WS_MSG_START) == 0) {
                 handleStartMessage(doc);
             } else if (strcmp(msgType, WS_MSG_RESET) == 0) {
                 handleResetMessage(doc);
-            } else if (strcmp(msgType, WS_MSG_TIME_SYNC) == 0) {
-                handleTimeSyncMessage(doc);
             } else if (strcmp(msgType, WS_MSG_SPLIT) == 0) {
                 handleSplitMessage(doc);
             } else if (strcmp(msgType, WS_MSG_EVENT_HEAT) == 0) {
@@ -387,21 +376,6 @@ void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, s
             break;
         }
         
-        case WStype_PONG:
-            lastPongTime = millis();
-            pingMs = lastPongTime - lastPingTime;
-            
-            // Track best ping time for more accurate lag compensation
-            if (bestPingMs == -1 || pingMs < bestPingMs) {
-                bestPingMs = pingMs;
-                Serial.printf("New best ping: %dms\n", bestPingMs);
-            }
-            pingSampleCount++;
-            
-            Serial.printf("Pong received - ping: %dms, best: %dms, samples: %d\n", 
-                         pingMs, bestPingMs, pingSampleCount);
-            break;
-            
         case WStype_ERROR:
             Serial.printf("WebSocket Error: %s\n", payload);
             break;
@@ -422,13 +396,6 @@ void WebSocketStopwatch::handleStartMessage(JsonDocument& doc) {
 
 void WebSocketStopwatch::handleResetMessage(JsonDocument& doc) {
     handleRemoteReset();
-}
-
-void WebSocketStopwatch::handleTimeSyncMessage(JsonDocument& doc) {
-    if (doc.containsKey("server_time")) {
-        uint64_t serverTime = doc["server_time"].as<uint64_t>();
-        updateTimeOffset(serverTime);
-    }
 }
 
 void WebSocketStopwatch::handleSplitMessage(JsonDocument& doc) {
@@ -471,4 +438,70 @@ void WebSocketStopwatch::handleClearMessage(JsonDocument& doc) {
 
 int WebSocketStopwatch::getPingMs() {
     return pingMs;
+}
+
+void WebSocketStopwatch::sendJsonPing() {
+    StaticJsonDocument<128> doc;
+    doc["type"] = WS_MSG_PING;
+    doc["time"] = millis(); // Send current client time
+    
+    String message;
+    serializeJson(doc, message);
+    sendMessage(message);
+}
+
+void WebSocketStopwatch::handlePingMessage(JsonDocument& doc) {
+    // Server sent us a ping, we should respond with pong
+    // This is unusual but we handle it per spec
+    StaticJsonDocument<128> response;
+    response["type"] = WS_MSG_PONG;
+    response["client_ping_time"] = doc["time"];
+    response["server_time"] = millis(); // Our time (acting as server)
+    
+    String message;
+    serializeJson(response, message);
+    sendMessage(message);
+    
+    Serial.println("Responded to server ping with pong");
+}
+
+void WebSocketStopwatch::handlePongMessage(JsonDocument& doc) {
+    // Server responded to our ping
+    lastPongTime = millis();
+    
+    if (doc.containsKey("client_ping_time") && doc.containsKey("server_time")) {
+        uint64_t clientPingTime = doc["client_ping_time"];
+        uint64_t serverTime = doc["server_time"];
+        
+        // Calculate round-trip time
+        pingMs = lastPongTime - clientPingTime;
+        
+        // Calculate server time offset using: offset = server_time - client_time - rtt/2
+        int64_t clientTime = lastPongTime;
+        serverTimeOffset = serverTime - clientTime - (pingMs / 2);
+        timeSync = true;
+        
+        // Track best ping time for more accurate lag compensation
+        if (bestPingMs == -1 || pingMs < bestPingMs) {
+            bestPingMs = pingMs;
+            Serial.printf("New best ping: %dms\n", bestPingMs);
+        }
+        pingSampleCount++;
+        
+        Serial.printf("Pong received - ping: %dms, best: %dms, offset: %lldms, samples: %d\n", 
+                     pingMs, bestPingMs, serverTimeOffset, pingSampleCount);
+        
+        if (onTimeSync) {
+            onTimeSync(timeSync);
+        }
+    } else {
+        Serial.println("Invalid pong message format");
+    }
+}
+
+uint64_t WebSocketStopwatch::getSynchronizedTime() {
+    if (timeSync) {
+        return millis() + serverTimeOffset;
+    }
+    return millis(); // Fallback to local time if not synchronized
 }
