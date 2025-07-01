@@ -20,6 +20,7 @@ WebSocketStopwatch::WebSocketStopwatch()
     , currentState(STOPWATCH_STOPPED)
     , startTimeMs(0)
     , elapsedMs(0)
+    , syncStartTime(0)
     , lapCount(0)
     , laneNumber(9)
     , lastDisplayUpdate(0)
@@ -142,7 +143,15 @@ void WebSocketStopwatch::start() {
 
 void WebSocketStopwatch::stop() {
     if (currentState == STOPWATCH_RUNNING) {
-        elapsedMs = millis() - startTimeMs;
+        // Calculate final elapsed time using synchronized time if available
+        if (syncStartTime > 0 && timeSync) {
+            uint64_t currentSyncTime = getSynchronizedTime();
+            elapsedMs = (uint32_t)(currentSyncTime - syncStartTime);
+        } else {
+            // Fallback to local time
+            elapsedMs = millis() - startTimeMs;
+        }
+        
         currentState = STOPWATCH_STOPPED;
         
         Serial.printf("Stopwatch stopped at: %s\n", formatTime(elapsedMs).c_str());
@@ -157,6 +166,7 @@ void WebSocketStopwatch::reset() {
     currentState = STOPWATCH_STOPPED;
     startTimeMs = 0;
     elapsedMs = 0;
+    syncStartTime = 0;
     lapCount = 0;
     
     // Clear lap data
@@ -176,23 +186,34 @@ void WebSocketStopwatch::reset() {
 
 void WebSocketStopwatch::addLap() {
     if (currentState == STOPWATCH_RUNNING && lapCount < MAX_LAPS) {
-        uint32_t currentElapsed = millis() - startTimeMs;
-        uint32_t lapTime = currentElapsed;
+        // Get current synchronized time for the split
+        uint64_t currentSyncTime = getSynchronizedTime();
         
+        // Calculate elapsed time using synchronized timestamps if available
+        uint32_t currentElapsed;
+        if (syncStartTime > 0 && timeSync) {
+            // Use synchronized time calculation
+            currentElapsed = (uint32_t)(currentSyncTime - syncStartTime);
+        } else {
+            // Fallback to local time if sync not available
+            currentElapsed = millis() - startTimeMs;
+        }
+        
+        uint32_t lapTime = currentElapsed;
         if (lapCount > 0) {
             lapTime = currentElapsed - laps[lapCount - 1].totalTimeMs;
         }
         
         laps[lapCount].lapTimeMs = lapTime;
         laps[lapCount].totalTimeMs = currentElapsed;
-        laps[lapCount].serverTimestamp = getServerTime();
+        laps[lapCount].serverTimestamp = currentSyncTime;
         
         lapCount++;
         
-        Serial.printf("Lap %d added: %s (Total: %s)\n", 
-                      lapCount, formatTime(lapTime).c_str(), formatTime(currentElapsed).c_str());
+        Serial.printf("Lap %d added: %s (Total: %s) - Sync time: %llu\n", 
+                      lapCount, formatTime(lapTime).c_str(), formatTime(currentElapsed).c_str(), currentSyncTime);
         
-        // Send split time via WebSocket
+        // Send split time via WebSocket with synchronized timestamp
         sendSplitTime(currentElapsed);
         
         if (onLapAdded) {
@@ -207,7 +228,14 @@ StopwatchState WebSocketStopwatch::getState() {
 
 uint32_t WebSocketStopwatch::getElapsedTime() {
     if (currentState == STOPWATCH_RUNNING) {
-        return millis() - startTimeMs;
+        // Use synchronized time if available
+        if (syncStartTime > 0 && timeSync) {
+            uint64_t currentSyncTime = getSynchronizedTime();
+            return (uint32_t)(currentSyncTime - syncStartTime);
+        } else {
+            // Fallback to local time
+            return millis() - startTimeMs;
+        }
     }
     return elapsedMs;
 }
@@ -256,6 +284,7 @@ void WebSocketStopwatch::clearDisplay() {
 }
 
 void WebSocketStopwatch::handleRemoteStart(uint64_t serverTime) {
+    syncStartTime = serverTime; // Store synchronized start time
     if (currentState != STOPWATCH_RUNNING) {
         start();
         Serial.printf("Remote start received with server time: %llu\n", serverTime);
@@ -282,13 +311,13 @@ void WebSocketStopwatch::sendSplitTime(uint32_t elapsedTime) {
         return;
     }
     
-    // Use synchronized time for split timestamp
+    // Use current synchronized time for split timestamp (not calculated from elapsed)
     uint64_t splitTimestamp = getSynchronizedTime();
     
     StaticJsonDocument<300> doc;
     doc["type"] = WS_MSG_SPLIT;
     doc["lane"] = laneNumber; // Use integer instead of string per new spec
-    doc["timestamp"] = splitTimestamp; // Use synchronized timestamp
+    doc["timestamp"] = splitTimestamp; // Use current synchronized timestamp
     
     String message;
     serializeJson(doc, message);

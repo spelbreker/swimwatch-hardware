@@ -53,8 +53,9 @@ private:
     
     // Stopwatch state
     StopwatchState currentState;
-    uint32_t startTimeMs;
+    uint32_t startTimeMs;           // Local start time (for fallback)
     uint32_t elapsedMs;
+    uint64_t syncStartTime;         // Synchronized start time from server
     
     // Event and Heat information
     String currentEvent;
