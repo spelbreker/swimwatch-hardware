@@ -468,7 +468,7 @@ void DisplayManager::updateWiFiStatus(const String& status, bool isConnected, in
 void DisplayManager::updateWebSocketStatus(const String& status, bool isConnected, int pingMs) {
     String wsText;
     if (isConnected && pingMs >= 0) {
-        wsText = "WS\n" + String(pingMs) + "ms";
+        wsText = "ping\n" + String(pingMs) + "ms";
     } else if (isConnected) {
         wsText = "WS\nOK";
     } else {
