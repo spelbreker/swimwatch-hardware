@@ -181,35 +181,6 @@ void DisplayManager::showGeneralStatus(const String& message, uint16_t color) {
     tft.drawString(message, centerX, centerY);
 }
 
-void DisplayManager::clearStatus() {
-    // Clear status message area in main section
-    clearArea(MAIN_AREA_X, AREA_LAP1_Y, MAIN_AREA_WIDTH, AREA_LAP1_HEIGHT);
-}
-
-void DisplayManager::updateLapDisplay(const uint8_t* laps, uint8_t lapCount, uint8_t maxDisplay) {
-    // This function displays laps in the dedicated lap areas
-    clearLapTimes(); // Clear all lap areas first
-    
-    // Display up to 3 laps in the dedicated areas
-    for (uint8_t i = 0; i < lapCount && i < 3; i++) {
-        String lapTime = String(laps[i] / 60) + ":" + 
-                        String((laps[i] % 60) / 10) + String((laps[i] % 60) % 10);
-        updateLapTime(i + 1, lapTime);
-    }
-    
-    lapAreaDirty = false;
-}
-
-void DisplayManager::clearLaps() {
-    clearLapTimes();
-}
-
-void DisplayManager::showConnectionInfo(const String& ssid, const IPAddress& ip) {
-    // Show connection info in the WiFi status area
-    String connectionText = "Connected\\n" + ssid;
-    updateWiFiStatus(connectionText, true);
-}
-
 void DisplayManager::showConfigPortalInfo(const String& apName, const String& apPassword) {
     clearScreen();
     
@@ -468,7 +439,7 @@ void DisplayManager::updateWiFiStatus(const String& status, bool isConnected, in
 void DisplayManager::updateWebSocketStatus(const String& status, bool isConnected, int pingMs) {
     String wsText;
     if (isConnected && pingMs >= 0) {
-        wsText = "ping\n" + String(pingMs) + "ms";
+        wsText = "WS\n" + String(pingMs) + "ms";
     } else if (isConnected) {
         wsText = "WS\nOK";
     } else {
@@ -548,22 +519,7 @@ void DisplayManager::clearStatusAreas() {
 }
 
 // ===============================
-// Legacy Compatibility Functions
+// Utility Functions
 // ===============================
 
-// Legacy compatibility functions
-void DisplayManager::showTimeZero() {
-    updateStopwatchDisplay(0, false);
-}
-
-void DisplayManager::showBatteryStatus(float voltage, uint8_t percentage) {
-    updateBatteryDisplay(voltage, percentage);
-}
-
-void DisplayManager::showWiFiStatus(const String& message, bool isError) {
-    updateWiFiStatus(message, !isError);
-}
-
-void DisplayManager::showWebSocketStatus(const String& message, bool isConnected) {
-    updateWebSocketStatus(message, isConnected);
-}
+// showGeneralStatus and showConfigPortalInfo are kept as they're still used in main.cpp

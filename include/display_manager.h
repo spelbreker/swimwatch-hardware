@@ -219,27 +219,17 @@ public:
     void clearStatusAreas();
     
     // ===================================
-    // Backward Compatibility Interface
+    // Utility Functions
     // ===================================
     
-    // Status display (backward compatibility)
-    void showWiFiStatus(const String& message, bool isError = false);
-    void showWebSocketStatus(const String& message, bool isConnected = false);
+    // Status display (used by main.cpp for error messages)
     void showGeneralStatus(const String& message, uint16_t color = COLOR_STATUS);
-    void clearStatus();
     
-    // Legacy support
-    void showTimeZero();
-    String formatStopwatchTime(uint32_t milliseconds, bool isRunning = true);
-    void showBatteryStatus(float voltage, uint8_t percentage);
-    
-    // Lap display
-    void updateLapDisplay(const uint8_t* laps, uint8_t lapCount, uint8_t maxDisplay = 5);
-    void clearLaps();
-    
-    // Connection info
-    void showConnectionInfo(const String& ssid, const IPAddress& ip);
+    // Connection setup (used by main.cpp for captive portal)
     void showConfigPortalInfo(const String& apName, const String& apPassword);
+    
+    // Time formatting (part of core API)
+    String formatStopwatchTime(uint32_t milliseconds, bool isRunning = true);
     
     // ===================================
     // System State Management
