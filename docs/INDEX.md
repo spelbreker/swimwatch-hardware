@@ -8,7 +8,7 @@ This project includes comprehensive documentation organized for different audien
 
 ### For Users
 - **[README.md](README.md)** - Main project documentation with setup and usage
-- **[DISPLAY_LAYOUT.md](DISPLAY_LAYOUT.md)** - Display areas and visual organization
+- **[docs/DISPLAY_MANAGER.md](DISPLAY_LAYOUT.md)** - Display areas and visual organization
 
 ### For Developers  
 - **[docs/DEVELOPER.md](docs/DEVELOPER.md)** - Complete development guide

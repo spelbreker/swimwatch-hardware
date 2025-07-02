@@ -1,4 +1,43 @@
+/**
+ * @file display_manager.cpp
+ * @brief Display Manager for LilyGO T-Display S3 Swimming Stopwatch
+ * 
+ * This file implements the display management system for a swimming stopwatch
+ * using the LilyGO T-Display S3 with ST7789V 1.9" TFT display.
+ * 
+ * Display Layout (320x170 pixels, landscape):
+ * ┌─────────────────────────────────────────┬─────────────────────┐
+ * │                                         │     WiFi Status     │
+ * │          Stopwatch Time Display         │    (Strength Bars)  │
+ * │             (240x80 area)               ├─────────────────────┤
+ * │                                         │   WebSocket Status  │
+ * ├─────────────────────────────────────────┤      (WS + Ping)    │
+ * │           Split Times Area              ├─────────────────────┤
+ * │   Split - 1: xx:xx:xx (if available)    │    Lane Number      │
+ * │   Split - 2: xx:xx:xx (if available)    │      Lane X         │
+ * │   Split - 3: xx:xx:xx (if available)    ├─────────────────────┤
+ * │             (240x90 area)               │   Battery Status    │
+ * │                                         │    Battery XX%      │
+ * └─────────────────────────────────────────┴─────────────────────┘
+ * 
+ * Features:
+ * - Main area (0-240px): Stopwatch time and split times
+ * - Sidebar (240-320px): Status information with swimming pool background
+ * - WiFi strength visualization with colored bars
+ * - Real-time WebSocket connection monitoring
+ * - Lane number display
+ * - Battery percentage monitoring
+ * - Clean, swimming-themed interface
+ * 
+ * @author Swimming Timer System
+ * @date 2025
+ */
+
 #include "display_manager.h"
+
+// ================================
+// Initialization and Basic Setup
+// ================================
 
 DisplayManager::DisplayManager() 
     : stopwatchAreaDirty(true)
@@ -7,9 +46,9 @@ DisplayManager::DisplayManager()
     , laneAreaDirty(true)
     , batteryAreaDirty(true)
     , lapAreaDirty(true)
-    , timeFont(6)
-    , statusFont(1)
-    , lapFont(2) {
+    , timeFont(6)      // Large font for stopwatch time
+    , statusFont(1)    // Small font for status text
+    , lapFont(2) {     // Medium font for lap times
 }
 
 bool DisplayManager::init() {
@@ -20,9 +59,6 @@ bool DisplayManager::init() {
     
     // Set default colors and fonts
     clearScreen();
-    
-    // Draw the layout borders
-    drawBorders();
     
     // Make sure lap areas start completely clean
     clearLapTimes();
@@ -47,12 +83,13 @@ void DisplayManager::setBrightness(uint8_t brightness) {
 }
 
 void DisplayManager::clearScreen() {
+    // Fill main area with black background
     tft.fillScreen(COLOR_BACKGROUND);
     
-    // Draw sidebar background
+    // Draw swimming pool colored sidebar background
     drawSidebarBackground();
     
-    // Clear all cached strings
+    // Reset all cached display strings
     lastTimeString = "";
     lastWiFiStatus = "";
     lastWebSocketStatus = "";
@@ -63,7 +100,7 @@ void DisplayManager::clearScreen() {
     lastLap3 = "";
     lastStartupMessage = "";
     
-    // Mark all areas as dirty
+    // Mark all display areas as needing refresh
     stopwatchAreaDirty = true;
     wifiAreaDirty = true;
     websocketAreaDirty = true;
@@ -79,10 +116,10 @@ void DisplayManager::showSplashScreen() {
     tft.setTextColor(COLOR_TIME_DISPLAY, COLOR_BACKGROUND);
     tft.setTextDatum(MC_DATUM);
     
-    tft.drawString("Swimwatch", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 - 20);
+    tft.drawString("SwimWatch", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 - 20);
     tft.setTextFont(2);
     tft.setTextColor(COLOR_STATUS, COLOR_BACKGROUND);
-    tft.drawString("Stopwatch System", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 10);
+    tft.drawString("T-Display S3", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 10);
     tft.drawString("Initializing...", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 30);
     
     delay(2000);
@@ -190,6 +227,10 @@ void DisplayManager::showConfigPortalInfo(const String& apName, const String& ap
     tft.drawString("Then go to 192.168.4.1", DISPLAY_WIDTH/2, 130);
 }
 
+// ===========================
+// Utility and Helper Functions
+// ===========================
+
 void DisplayManager::forceRefresh() {
     stopwatchAreaDirty = true;
     wifiAreaDirty = true;
@@ -204,34 +245,38 @@ bool DisplayManager::needsUpdate() {
            laneAreaDirty || batteryAreaDirty || lapAreaDirty;
 }
 
-// New layout-specific functions
+// ===============================
+// Core Display Update Functions  
+// ===============================
 void DisplayManager::drawBorders() {
-    // Draw vertical line separating main area from status area
-    tft.drawFastVLine(STATUS_AREA_X - 1, 0, DISPLAY_HEIGHT, COLOR_STATUS);
-    
-    // Draw horizontal lines in status area only - remove the line under lane info
-    tft.drawFastHLine(STATUS_AREA_X, AREA_WIFI_STATUS_HEIGHT, STATUS_AREA_WIDTH, COLOR_STATUS);
-    tft.drawFastHLine(STATUS_AREA_X, AREA_WIFI_STATUS_HEIGHT + AREA_WEBSOCKET_STATUS_HEIGHT, STATUS_AREA_WIDTH, COLOR_STATUS);
-    
-    // Remove horizontal lines in main area - cleaner look for lap times
+    // Optional: Draw vertical line separating main area from status area
+    // Commented out for cleaner look - sidebar background provides visual separation
+    // tft.drawFastVLine(STATUS_AREA_X - 1, 0, DISPLAY_HEIGHT, COLOR_STATUS);
 }
 
 void DisplayManager::drawSidebarBackground() {
-    // Fill the right sidebar with swimming pool color
+    // Fill the right sidebar with swimming pool blue-green color
     tft.fillRect(STATUS_AREA_X, 0, STATUS_AREA_WIDTH, DISPLAY_HEIGHT, COLOR_SIDEBAR_BG);
 }
 
 void DisplayManager::drawWiFiStrengthBars(int rssi, int x, int y, int width, int height) {
-    // Draw WiFi strength bars based on RSSI
-    // RSSI ranges: > -50 (excellent), -50 to -60 (good), -60 to -70 (fair), < -70 (poor)
+    /**
+     * Draw WiFi signal strength as colored bars
+     * RSSI Signal Quality Reference:
+     * > -50 dBm: Excellent (4 bars, green)
+     * -50 to -60 dBm: Good (3 bars, green)  
+     * -60 to -70 dBm: Fair (2 bars, yellow)
+     * -70 to -80 dBm: Poor (1 bar, red)
+     * < -80 dBm: No signal (0 bars)
+     */
     
     int barWidth = width / 4 - 2;
     int barSpacing = 2;
     
-    // Clear the area first
+    // Clear the drawing area
     tft.fillRect(x, y, width, height, COLOR_SIDEBAR_BG);
     
-    // Determine signal strength level (1-4 bars)
+    // Determine signal strength level (0-4 bars)
     int signalLevel = 0;
     if (rssi > -50) signalLevel = 4;      // Excellent
     else if (rssi > -60) signalLevel = 3; // Good  
@@ -239,7 +284,7 @@ void DisplayManager::drawWiFiStrengthBars(int rssi, int x, int y, int width, int
     else if (rssi > -80) signalLevel = 1; // Poor
     else signalLevel = 0;                 // No signal
     
-    // Draw bars from left to right, increasing in height
+    // Draw bars with increasing height from left to right
     for (int i = 0; i < 4; i++) {
         int barHeight = (height * (i + 1)) / 4;
         int barX = x + i * (barWidth + barSpacing);
@@ -247,12 +292,13 @@ void DisplayManager::drawWiFiStrengthBars(int rssi, int x, int y, int width, int
         
         uint16_t barColor;
         if (i < signalLevel) {
-            // Color bars based on signal strength
-            if (signalLevel >= 3) barColor = COLOR_WIFI_BAR_STRONG;      // Green for good signal
-            else if (signalLevel >= 2) barColor = COLOR_WIFI_BAR_GOOD;   // Yellow for fair signal  
-            else barColor = COLOR_WIFI_BAR_WEAK;                         // Red for poor signal
+            // Active bars colored by signal quality
+            if (signalLevel >= 3) barColor = COLOR_WIFI_BAR_STRONG;      // Green
+            else if (signalLevel >= 2) barColor = COLOR_WIFI_BAR_GOOD;   // Yellow  
+            else barColor = COLOR_WIFI_BAR_WEAK;                         // Red
         } else {
-            barColor = COLOR_STATUS; // Dim color for inactive bars
+            // Inactive bars in dim color
+            barColor = COLOR_STATUS;
         }
         
         tft.fillRect(barX, barY, barWidth, barHeight, barColor);
@@ -282,24 +328,19 @@ void DisplayManager::updateStopwatchDisplay(uint32_t elapsedMs, bool isRunning) 
 
 void DisplayManager::showStartupMessage(const String& message) {
     if (message != lastStartupMessage || stopwatchAreaDirty) {
-        // Clear the ENTIRE main area to make sure we have a clean slate
+        // Clear the stopwatch area
         tft.fillRect(MAIN_AREA_X, AREA_STOPWATCH_Y, MAIN_AREA_WIDTH, AREA_STOPWATCH_HEIGHT, COLOR_BACKGROUND);
         
-        // Use a very distinctive color to debug where the text appears
         tft.setTextFont(2);
-        tft.setTextColor(TFT_YELLOW, COLOR_BACKGROUND);  // Bright yellow to see clearly
+        tft.setTextColor(COLOR_STATUS, COLOR_BACKGROUND);
         tft.setTextDatum(MC_DATUM);
         
-        // Draw a debug rectangle to show exactly where we think the text area is
-        tft.drawRect(MAIN_AREA_X + 10, AREA_STOPWATCH_Y + 10, MAIN_AREA_WIDTH - 20, AREA_STOPWATCH_HEIGHT - 20, TFT_RED);
+        // Center the message in the stopwatch area
+        int centerX = MAIN_AREA_X + (MAIN_AREA_WIDTH / 2);
+        int centerY = AREA_STOPWATCH_Y + (AREA_STOPWATCH_HEIGHT / 2);
         
-        // Center the message in the stopwatch area (left side only)
-        int centerX = MAIN_AREA_X + (MAIN_AREA_WIDTH / 2);  // Should be 120 (240/2)
-        int centerY = AREA_STOPWATCH_Y + (AREA_STOPWATCH_HEIGHT / 2);  // Should be 40 (80/2)
-        
-        // Split long messages into multiple lines
+        // Split long messages into multiple lines for better readability
         if (message.length() > 20) {
-            // Find a good break point
             int spaceIndex = message.indexOf(' ', 10);
             if (spaceIndex > 0 && spaceIndex < message.length() - 5) {
                 String line1 = message.substring(0, spaceIndex);
@@ -327,12 +368,13 @@ void DisplayManager::clearStartupMessage() {
     }
 }
 
+// ===========================
+// Split Time and Lap Management
+// ===========================
+
 void DisplayManager::updateLapTime(uint8_t lapNumber, const String& time) {
     String* lastLap = nullptr;
     int yPos = 0;
-    
-    // Debug: Print what we're trying to display
-    Serial.printf("updateLapTime called: lapNumber=%d, time='%s'\n", lapNumber, time.c_str());
     
     switch (lapNumber) {
         case 1:
@@ -352,16 +394,14 @@ void DisplayManager::updateLapTime(uint8_t lapNumber, const String& time) {
     }
     
     if (time != *lastLap || lapAreaDirty) {
-        // Always clear the lap area first
+        // Clear the lap area
         tft.fillRect(MAIN_AREA_X, yPos, MAIN_AREA_WIDTH, AREA_LAP1_HEIGHT, COLOR_BACKGROUND);
         
-        // Only draw text if we have a valid time
+        // Draw text if we have a valid time
         if (!time.isEmpty()) {
             tft.setTextFont(lapFont);
             tft.setTextColor(COLOR_LAP_INFO, COLOR_BACKGROUND);
             tft.setTextDatum(ML_DATUM);
-            
-            // Display the lap time as provided (already formatted from main.cpp)
             tft.drawString(time, MAIN_AREA_X + 5, yPos + (AREA_LAP1_HEIGHT / 2));
         }
         
@@ -378,6 +418,14 @@ void DisplayManager::clearLapTimes() {
     lastLap3 = "";
     lapAreaDirty = false;
 }
+
+// ===========================
+// Status Area Updates
+// ===========================
+
+// =============================
+// Status Display Functions
+// =============================
 
 void DisplayManager::updateWiFiStatus(const String& status, bool isConnected, int rssi) {
     String wifiText = isConnected ? "WiFi" : status;
@@ -498,6 +546,10 @@ void DisplayManager::clearStatusAreas() {
     laneAreaDirty = true;
     batteryAreaDirty = true;
 }
+
+// ===============================
+// Legacy Compatibility Functions
+// ===============================
 
 // Legacy compatibility functions
 void DisplayManager::showTimeZero() {
