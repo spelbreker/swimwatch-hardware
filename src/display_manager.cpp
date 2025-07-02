@@ -24,6 +24,12 @@ bool DisplayManager::init() {
     // Draw the layout borders
     drawBorders();
     
+    // Make sure lap areas start completely clean
+    clearLapTimes();
+    
+    // Force all status areas to be marked as dirty so they will be drawn
+    forceRefresh();
+    
     Serial.println("Display initialized successfully");
     return true;
 }
@@ -42,6 +48,9 @@ void DisplayManager::setBrightness(uint8_t brightness) {
 
 void DisplayManager::clearScreen() {
     tft.fillScreen(COLOR_BACKGROUND);
+    
+    // Draw sidebar background
+    drawSidebarBackground();
     
     // Clear all cached strings
     lastTimeString = "";
@@ -70,7 +79,7 @@ void DisplayManager::showSplashScreen() {
     tft.setTextColor(COLOR_TIME_DISPLAY, COLOR_BACKGROUND);
     tft.setTextDatum(MC_DATUM);
     
-    tft.drawString("T-Display S3", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 - 20);
+    tft.drawString("Swimwatch", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 - 20);
     tft.setTextFont(2);
     tft.setTextColor(COLOR_STATUS, COLOR_BACKGROUND);
     tft.drawString("Stopwatch System", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 10);
@@ -120,31 +129,24 @@ String DisplayManager::formatStopwatchTime(uint32_t milliseconds, bool isRunning
 }
 
 void DisplayManager::showGeneralStatus(const String& message, uint16_t color) {
-    // Use WiFi status area for general status messages
-    String statusText = message;
+    // Show status messages in the main area, below the stopwatch display
+    // This ensures they don't interfere with the right sidebar
     
-    if (statusText != lastWiFiStatus || wifiAreaDirty) {
-        clearArea(STATUS_AREA_X, AREA_WIFI_STATUS_Y, STATUS_AREA_WIDTH, AREA_WIFI_STATUS_HEIGHT);
-        
-        tft.setTextFont(statusFont);
-        tft.setTextColor(color, COLOR_BACKGROUND);
-        tft.setTextDatum(MC_DATUM);
-        
-        int centerX = STATUS_AREA_X + (STATUS_AREA_WIDTH / 2);
-        int centerY = AREA_WIFI_STATUS_Y + (AREA_WIFI_STATUS_HEIGHT / 2);
-        tft.drawString(statusText, centerX, centerY);
-        
-        lastWiFiStatus = statusText;
-        wifiAreaDirty = false;
-    }
+    // Clear the area below stopwatch for status message
+    clearArea(MAIN_AREA_X, AREA_LAP1_Y, MAIN_AREA_WIDTH, AREA_LAP1_HEIGHT);
+    
+    tft.setTextFont(statusFont + 1);
+    tft.setTextColor(color, COLOR_BACKGROUND);
+    tft.setTextDatum(MC_DATUM);
+    
+    int centerX = MAIN_AREA_X + (MAIN_AREA_WIDTH / 2);
+    int centerY = AREA_LAP1_Y + (AREA_LAP1_HEIGHT / 2);
+    tft.drawString(message, centerX, centerY);
 }
 
 void DisplayManager::clearStatus() {
-    if (!lastWiFiStatus.isEmpty() || wifiAreaDirty) {
-        clearArea(STATUS_AREA_X, AREA_WIFI_STATUS_Y, STATUS_AREA_WIDTH, AREA_WIFI_STATUS_HEIGHT);
-        lastWiFiStatus = "";
-        wifiAreaDirty = false;
-    }
+    // Clear status message area in main section
+    clearArea(MAIN_AREA_X, AREA_LAP1_Y, MAIN_AREA_WIDTH, AREA_LAP1_HEIGHT);
 }
 
 void DisplayManager::updateLapDisplay(const uint8_t* laps, uint8_t lapCount, uint8_t maxDisplay) {
@@ -207,15 +209,54 @@ void DisplayManager::drawBorders() {
     // Draw vertical line separating main area from status area
     tft.drawFastVLine(STATUS_AREA_X - 1, 0, DISPLAY_HEIGHT, COLOR_STATUS);
     
-    // Draw horizontal lines in status area
+    // Draw horizontal lines in status area only - remove the line under lane info
     tft.drawFastHLine(STATUS_AREA_X, AREA_WIFI_STATUS_HEIGHT, STATUS_AREA_WIDTH, COLOR_STATUS);
     tft.drawFastHLine(STATUS_AREA_X, AREA_WIFI_STATUS_HEIGHT + AREA_WEBSOCKET_STATUS_HEIGHT, STATUS_AREA_WIDTH, COLOR_STATUS);
-    tft.drawFastHLine(STATUS_AREA_X, AREA_WIFI_STATUS_HEIGHT + AREA_WEBSOCKET_STATUS_HEIGHT + AREA_LANE_INFO_HEIGHT, STATUS_AREA_WIDTH, COLOR_STATUS);
     
-    // Draw horizontal lines in main area for laps
-    tft.drawFastHLine(MAIN_AREA_X, AREA_STOPWATCH_HEIGHT, MAIN_AREA_WIDTH, COLOR_STATUS);
-    tft.drawFastHLine(MAIN_AREA_X, AREA_LAP1_Y + AREA_LAP1_HEIGHT, MAIN_AREA_WIDTH, COLOR_STATUS);
-    tft.drawFastHLine(MAIN_AREA_X, AREA_LAP2_Y + AREA_LAP2_HEIGHT, MAIN_AREA_WIDTH, COLOR_STATUS);
+    // Remove horizontal lines in main area - cleaner look for lap times
+}
+
+void DisplayManager::drawSidebarBackground() {
+    // Fill the right sidebar with swimming pool color
+    tft.fillRect(STATUS_AREA_X, 0, STATUS_AREA_WIDTH, DISPLAY_HEIGHT, COLOR_SIDEBAR_BG);
+}
+
+void DisplayManager::drawWiFiStrengthBars(int rssi, int x, int y, int width, int height) {
+    // Draw WiFi strength bars based on RSSI
+    // RSSI ranges: > -50 (excellent), -50 to -60 (good), -60 to -70 (fair), < -70 (poor)
+    
+    int barWidth = width / 4 - 2;
+    int barSpacing = 2;
+    
+    // Clear the area first
+    tft.fillRect(x, y, width, height, COLOR_SIDEBAR_BG);
+    
+    // Determine signal strength level (1-4 bars)
+    int signalLevel = 0;
+    if (rssi > -50) signalLevel = 4;      // Excellent
+    else if (rssi > -60) signalLevel = 3; // Good  
+    else if (rssi > -70) signalLevel = 2; // Fair
+    else if (rssi > -80) signalLevel = 1; // Poor
+    else signalLevel = 0;                 // No signal
+    
+    // Draw bars from left to right, increasing in height
+    for (int i = 0; i < 4; i++) {
+        int barHeight = (height * (i + 1)) / 4;
+        int barX = x + i * (barWidth + barSpacing);
+        int barY = y + height - barHeight;
+        
+        uint16_t barColor;
+        if (i < signalLevel) {
+            // Color bars based on signal strength
+            if (signalLevel >= 3) barColor = COLOR_WIFI_BAR_STRONG;      // Green for good signal
+            else if (signalLevel >= 2) barColor = COLOR_WIFI_BAR_GOOD;   // Yellow for fair signal  
+            else barColor = COLOR_WIFI_BAR_WEAK;                         // Red for poor signal
+        } else {
+            barColor = COLOR_STATUS; // Dim color for inactive bars
+        }
+        
+        tft.fillRect(barX, barY, barWidth, barHeight, barColor);
+    }
 }
 
 void DisplayManager::updateStopwatchDisplay(uint32_t elapsedMs, bool isRunning) {
@@ -241,16 +282,36 @@ void DisplayManager::updateStopwatchDisplay(uint32_t elapsedMs, bool isRunning) 
 
 void DisplayManager::showStartupMessage(const String& message) {
     if (message != lastStartupMessage || stopwatchAreaDirty) {
-        // Clear stopwatch area
-        clearArea(MAIN_AREA_X, AREA_STOPWATCH_Y, MAIN_AREA_WIDTH, AREA_STOPWATCH_HEIGHT);
+        // Clear the ENTIRE main area to make sure we have a clean slate
+        tft.fillRect(MAIN_AREA_X, AREA_STOPWATCH_Y, MAIN_AREA_WIDTH, AREA_STOPWATCH_HEIGHT, COLOR_BACKGROUND);
         
-        tft.setTextFont(4);
-        tft.setTextColor(COLOR_STATUS, COLOR_BACKGROUND);
+        // Use a very distinctive color to debug where the text appears
+        tft.setTextFont(2);
+        tft.setTextColor(TFT_YELLOW, COLOR_BACKGROUND);  // Bright yellow to see clearly
         tft.setTextDatum(MC_DATUM);
         
-        int centerX = MAIN_AREA_X + (MAIN_AREA_WIDTH / 2);
-        int centerY = AREA_STOPWATCH_Y + (AREA_STOPWATCH_HEIGHT / 2);
-        tft.drawString(message, centerX, centerY);
+        // Draw a debug rectangle to show exactly where we think the text area is
+        tft.drawRect(MAIN_AREA_X + 10, AREA_STOPWATCH_Y + 10, MAIN_AREA_WIDTH - 20, AREA_STOPWATCH_HEIGHT - 20, TFT_RED);
+        
+        // Center the message in the stopwatch area (left side only)
+        int centerX = MAIN_AREA_X + (MAIN_AREA_WIDTH / 2);  // Should be 120 (240/2)
+        int centerY = AREA_STOPWATCH_Y + (AREA_STOPWATCH_HEIGHT / 2);  // Should be 40 (80/2)
+        
+        // Split long messages into multiple lines
+        if (message.length() > 20) {
+            // Find a good break point
+            int spaceIndex = message.indexOf(' ', 10);
+            if (spaceIndex > 0 && spaceIndex < message.length() - 5) {
+                String line1 = message.substring(0, spaceIndex);
+                String line2 = message.substring(spaceIndex + 1);
+                tft.drawString(line1, centerX, centerY - 10);
+                tft.drawString(line2, centerX, centerY + 10);
+            } else {
+                tft.drawString(message, centerX, centerY);
+            }
+        } else {
+            tft.drawString(message, centerX, centerY);
+        }
         
         lastStartupMessage = message;
         stopwatchAreaDirty = false;
@@ -258,14 +319,20 @@ void DisplayManager::showStartupMessage(const String& message) {
 }
 
 void DisplayManager::clearStartupMessage() {
-    lastStartupMessage = "";
-    stopwatchAreaDirty = true;
+    if (!lastStartupMessage.isEmpty()) {
+        // Actually clear the stopwatch area
+        tft.fillRect(MAIN_AREA_X, AREA_STOPWATCH_Y, MAIN_AREA_WIDTH, AREA_STOPWATCH_HEIGHT, COLOR_BACKGROUND);
+        lastStartupMessage = "";
+        stopwatchAreaDirty = false;
+    }
 }
 
 void DisplayManager::updateLapTime(uint8_t lapNumber, const String& time) {
-    String lapText = "Lap " + String(lapNumber) + ": " + time;
     String* lastLap = nullptr;
     int yPos = 0;
+    
+    // Debug: Print what we're trying to display
+    Serial.printf("updateLapTime called: lapNumber=%d, time='%s'\n", lapNumber, time.c_str());
     
     switch (lapNumber) {
         case 1:
@@ -284,22 +351,28 @@ void DisplayManager::updateLapTime(uint8_t lapNumber, const String& time) {
             return; // Only support 3 laps
     }
     
-    if (lapText != *lastLap || lapAreaDirty) {
-        // Clear lap area
-        clearArea(MAIN_AREA_X, yPos, MAIN_AREA_WIDTH, AREA_LAP1_HEIGHT);
+    if (time != *lastLap || lapAreaDirty) {
+        // Always clear the lap area first
+        tft.fillRect(MAIN_AREA_X, yPos, MAIN_AREA_WIDTH, AREA_LAP1_HEIGHT, COLOR_BACKGROUND);
         
-        tft.setTextFont(lapFont);
-        tft.setTextColor(COLOR_LAP_INFO, COLOR_BACKGROUND);
-        tft.setTextDatum(ML_DATUM);
-        tft.drawString(lapText, MAIN_AREA_X + 5, yPos + (AREA_LAP1_HEIGHT / 2));
+        // Only draw text if we have a valid time
+        if (!time.isEmpty()) {
+            tft.setTextFont(lapFont);
+            tft.setTextColor(COLOR_LAP_INFO, COLOR_BACKGROUND);
+            tft.setTextDatum(ML_DATUM);
+            
+            // Display the lap time as provided (already formatted from main.cpp)
+            tft.drawString(time, MAIN_AREA_X + 5, yPos + (AREA_LAP1_HEIGHT / 2));
+        }
         
-        *lastLap = lapText;
+        *lastLap = time;
     }
     lapAreaDirty = false;
 }
 
 void DisplayManager::clearLapTimes() {
-    clearArea(MAIN_AREA_X, AREA_LAP1_Y, MAIN_AREA_WIDTH, AREA_LAP1_HEIGHT + AREA_LAP2_HEIGHT + AREA_LAP3_HEIGHT);
+    // Clear all lap areas
+    tft.fillRect(MAIN_AREA_X, AREA_LAP1_Y, MAIN_AREA_WIDTH, AREA_LAP1_HEIGHT + AREA_LAP2_HEIGHT + AREA_LAP3_HEIGHT, COLOR_BACKGROUND);
     lastLap1 = "";
     lastLap2 = "";
     lastLap3 = "";
@@ -307,23 +380,37 @@ void DisplayManager::clearLapTimes() {
 }
 
 void DisplayManager::updateWiFiStatus(const String& status, bool isConnected, int rssi) {
-    String wifiText;
-    if (isConnected && rssi != 0) {
-        wifiText = "WIFI\n" + String(rssi) + " dBm";
-    } else {
-        wifiText = "WIFI\n" + status;
-    }
+    String wifiText = isConnected ? "WiFi" : status;
     
     if (wifiText != lastWiFiStatus || wifiAreaDirty) {
-        clearArea(STATUS_AREA_X, AREA_WIFI_STATUS_Y, STATUS_AREA_WIDTH, AREA_WIFI_STATUS_HEIGHT);
+        // Clear the WiFi status area with sidebar background
+        tft.fillRect(STATUS_AREA_X, AREA_WIFI_STATUS_Y, STATUS_AREA_WIDTH, AREA_WIFI_STATUS_HEIGHT, COLOR_SIDEBAR_BG);
         
-        tft.setTextFont(statusFont);
-        tft.setTextColor(isConnected ? COLOR_TIME_DISPLAY : COLOR_ERROR, COLOR_BACKGROUND);
-        tft.setTextDatum(MC_DATUM);
-        
-        int centerX = STATUS_AREA_X + (STATUS_AREA_WIDTH / 2);
-        int centerY = AREA_WIFI_STATUS_Y + (AREA_WIFI_STATUS_HEIGHT / 2);
-        tft.drawString(wifiText, centerX, centerY);
+        if (isConnected && rssi != 0) {
+            // Draw WiFi strength bars
+            int barAreaHeight = 15;
+            int barY = AREA_WIFI_STATUS_Y + 5;
+            int barWidth = STATUS_AREA_WIDTH - 10;
+            drawWiFiStrengthBars(rssi, STATUS_AREA_X + 5, barY, barWidth, barAreaHeight);
+            
+            // Show "WiFi" text below bars
+            tft.setTextFont(1);
+            tft.setTextColor(TFT_WHITE, COLOR_SIDEBAR_BG);
+            tft.setTextDatum(MC_DATUM);
+            int centerX = STATUS_AREA_X + (STATUS_AREA_WIDTH / 2);
+            tft.drawString("WiFi", centerX, AREA_WIFI_STATUS_Y + 28);
+            
+            // Show RSSI value
+            tft.drawString(String(rssi) + "dBm", centerX, AREA_WIFI_STATUS_Y + 38);
+        } else {
+            // Show disconnected status
+            tft.setTextFont(1);
+            tft.setTextColor(COLOR_ERROR, COLOR_SIDEBAR_BG);
+            tft.setTextDatum(MC_DATUM);
+            int centerX = STATUS_AREA_X + (STATUS_AREA_WIDTH / 2);
+            int centerY = AREA_WIFI_STATUS_Y + (AREA_WIFI_STATUS_HEIGHT / 2);
+            tft.drawString(wifiText, centerX, centerY);
+        }
         
         lastWiFiStatus = wifiText;
         wifiAreaDirty = false;
@@ -335,16 +422,17 @@ void DisplayManager::updateWebSocketStatus(const String& status, bool isConnecte
     if (isConnected && pingMs >= 0) {
         wsText = "WS\n" + String(pingMs) + "ms";
     } else if (isConnected) {
-        wsText = "WS\nConnected";
+        wsText = "WS\nOK";
     } else {
         wsText = "WS\n" + status;
     }
     
     if (wsText != lastWebSocketStatus || websocketAreaDirty) {
-        clearArea(STATUS_AREA_X, AREA_WEBSOCKET_STATUS_Y, STATUS_AREA_WIDTH, AREA_WEBSOCKET_STATUS_HEIGHT);
+        // Clear with sidebar background
+        tft.fillRect(STATUS_AREA_X, AREA_WEBSOCKET_STATUS_Y, STATUS_AREA_WIDTH, AREA_WEBSOCKET_STATUS_HEIGHT, COLOR_SIDEBAR_BG);
         
-        tft.setTextFont(statusFont);
-        tft.setTextColor(isConnected ? COLOR_TIME_DISPLAY : COLOR_WARNING, COLOR_BACKGROUND);
+        tft.setTextFont(1);
+        tft.setTextColor(isConnected ? TFT_WHITE : COLOR_ERROR, COLOR_SIDEBAR_BG);
         tft.setTextDatum(MC_DATUM);
         
         int centerX = STATUS_AREA_X + (STATUS_AREA_WIDTH / 2);
@@ -360,10 +448,11 @@ void DisplayManager::updateLaneInfo(uint8_t laneNumber) {
     String laneText = "Lane\n" + String(laneNumber);
     
     if (laneText != lastLaneInfo || laneAreaDirty) {
-        clearArea(STATUS_AREA_X, AREA_LANE_INFO_Y, STATUS_AREA_WIDTH, AREA_LANE_INFO_HEIGHT);
+        // Clear with sidebar background  
+        tft.fillRect(STATUS_AREA_X, AREA_LANE_INFO_Y, STATUS_AREA_WIDTH, AREA_LANE_INFO_HEIGHT, COLOR_SIDEBAR_BG);
         
-        tft.setTextFont(statusFont + 1);
-        tft.setTextColor(COLOR_STATUS, COLOR_BACKGROUND);
+        tft.setTextFont(2);
+        tft.setTextColor(TFT_WHITE, COLOR_SIDEBAR_BG);
         tft.setTextDatum(MC_DATUM);
         
         int centerX = STATUS_AREA_X + (STATUS_AREA_WIDTH / 2);
@@ -379,11 +468,12 @@ void DisplayManager::updateBatteryDisplay(float voltage, uint8_t percentage) {
     String batteryText = "Battery\n" + String(percentage) + "%";
     
     if (batteryText != lastBatteryString || batteryAreaDirty) {
-        clearArea(STATUS_AREA_X, AREA_BATTERY_STATUS_Y, STATUS_AREA_WIDTH, AREA_BATTERY_STATUS_HEIGHT);
+        // Clear with sidebar background
+        tft.fillRect(STATUS_AREA_X, AREA_BATTERY_STATUS_Y, STATUS_AREA_WIDTH, AREA_BATTERY_STATUS_HEIGHT, COLOR_SIDEBAR_BG);
         
-        tft.setTextFont(statusFont);
-        uint16_t color = (percentage > 20) ? COLOR_STATUS : COLOR_ERROR;
-        tft.setTextColor(color, COLOR_BACKGROUND);
+        tft.setTextFont(2);  // Use larger font for better visibility
+        uint16_t color = (percentage > 20) ? TFT_WHITE : COLOR_ERROR;
+        tft.setTextColor(color, COLOR_SIDEBAR_BG);
         tft.setTextDatum(MC_DATUM);
         
         int centerX = STATUS_AREA_X + (STATUS_AREA_WIDTH / 2);
@@ -396,7 +486,9 @@ void DisplayManager::updateBatteryDisplay(float voltage, uint8_t percentage) {
 }
 
 void DisplayManager::clearStatusAreas() {
-    clearArea(STATUS_AREA_X, 0, STATUS_AREA_WIDTH, DISPLAY_HEIGHT);
+    // Fill entire sidebar with swimming pool background
+    tft.fillRect(STATUS_AREA_X, 0, STATUS_AREA_WIDTH, DISPLAY_HEIGHT, COLOR_SIDEBAR_BG);
+    
     lastWiFiStatus = "";
     lastWebSocketStatus = "";
     lastLaneInfo = "";

@@ -15,6 +15,11 @@
 #define COLOR_STATUS TFT_CYAN
 #define COLOR_ERROR TFT_RED
 #define COLOR_WARNING TFT_ORANGE
+#define COLOR_SIDEBAR_BG 0x06FF  // Swimming pool blue-green color
+#define COLOR_WIFI_BAR TFT_WHITE
+#define COLOR_WIFI_BAR_WEAK TFT_RED
+#define COLOR_WIFI_BAR_GOOD TFT_YELLOW
+#define COLOR_WIFI_BAR_STRONG TFT_GREEN
 
 // Display areas based on the new layout design
 // Left side (main area): 0-240px width
@@ -75,6 +80,8 @@ private:
     
     // Helper methods
     void clearArea(int16_t x, int16_t y, int16_t w, int16_t h);
+    void drawSidebarBackground();
+    void drawWiFiStrengthBars(int rssi, int x, int y, int width, int height);
     String formatTimeDisplay(uint32_t milliseconds, bool showCentiseconds = true);
     
 public:

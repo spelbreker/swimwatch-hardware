@@ -10,7 +10,11 @@
  * Functionality:
  * - Stopwatch starts ONLY via WebSocket server command
  * - GPIO2 button creates split times and sends to server
- * - Display shows last 3 split times in rolling fashion
+ * void onSplitTime(int lane, const String& time) {
+    Serial.printf("Split time received for lane %d: %s\n", lane, time.c_str());
+    // Split times are now handled by the onSplit function
+    // This function can be used for additional processing if needed
+}y shows last 3 split times in rolling fashion
  * - Reset via GPIO14 when stopped
  * - Uses internal ESP32 timer (millis()) for accurate timing
  * 
@@ -211,6 +215,9 @@ void initializeNormalOperation() {
     int rssi = WiFi.RSSI();
     display.updateWiFiStatus("Connected", true, rssi);
     
+    // Show battery status (you can implement actual battery reading later)
+    display.updateBatteryDisplay(3.7f, 85);  // Example values - replace with actual battery reading
+    
     // Setup stopwatch callbacks
     stopwatch.onStateChanged = onStopwatchStateChanged;
     stopwatch.onLapAdded = onLapAdded;
@@ -353,6 +360,11 @@ void checkConnections() {
         int ping = stopwatch.getPingMs();
         display.updateWebSocketStatus("Connected", true, ping);
     }
+    
+    // Update battery status (placeholder - implement actual battery reading)
+    // For T-Display S3, you can read battery voltage via ADC
+    static uint8_t fakeBatteryLevel = 85;
+    display.updateBatteryDisplay(3.7f, fakeBatteryLevel);
 }
 
 // Callback functions
@@ -389,7 +401,7 @@ void onLapAdded(uint8_t lapNumber, uint32_t lapTime, uint32_t totalTime) {
     // Update display with last 3 splits
     for (int i = 0; i < 3; i++) {
         if (lastSplits[i].valid) {
-            String displayText = "S" + String(lastSplits[i].splitNumber) + ": " + lastSplits[i].formattedTime;
+            String displayText = "Split - " + String(lastSplits[i].splitNumber) + ": " + lastSplits[i].formattedTime;
             display.updateLapTime(i + 1, displayText);
         } else {
             display.updateLapTime(i + 1, "");
@@ -423,11 +435,8 @@ void onEventHeatChanged(const String& event, const String& heat) {
 
 void onSplitTimeReceived(uint8_t lane, const String& time) {
     Serial.printf("Split time received for lane %d: %s\n", lane, time.c_str());
-    // Split times could be shown in lap areas temporarily
-    if (lane == config.laneNumber) {
-        // Show our lane's split time in lap 1 area
-        display.updateLapTime(1, "Split: " + time);
-    }
+    // Split times are now handled by the onSplit function which shows them properly
+    // This function is for receiving individual split times from other lanes
 }
 
 void onDisplayClear() {
