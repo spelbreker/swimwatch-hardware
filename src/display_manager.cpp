@@ -400,8 +400,9 @@ void DisplayManager::clearLapTimes() {
 
 void DisplayManager::updateWiFiStatus(const String& status, bool isConnected, int rssi) {
     String wifiText = isConnected ? "WiFi" : status;
+    String currentStatus = wifiText + (isConnected && rssi != 0 ? String(rssi) : "");
     
-    if (wifiText != lastWiFiStatus || wifiAreaDirty) {
+    if (currentStatus != lastWiFiStatus || wifiAreaDirty) {
         // Clear the WiFi status area with sidebar background
         tft.fillRect(STATUS_AREA_X, AREA_WIFI_STATUS_Y, STATUS_AREA_WIDTH, AREA_WIFI_STATUS_HEIGHT, COLOR_SIDEBAR_BG);
         
@@ -431,7 +432,7 @@ void DisplayManager::updateWiFiStatus(const String& status, bool isConnected, in
             tft.drawString(wifiText, centerX, centerY);
         }
         
-        lastWiFiStatus = wifiText;
+        lastWiFiStatus = currentStatus;
         wifiAreaDirty = false;
     }
 }
