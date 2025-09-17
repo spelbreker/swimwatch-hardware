@@ -45,7 +45,7 @@
 #define COLOR_WARNING TFT_ORANGE
 
 // Swimming pool themed sidebar
-#define COLOR_SIDEBAR_BG 0x06FF  // Swimming pool blue-green color
+#define COLOR_SIDEBAR_BG 0x049D  // Swimming pool blue color (#0092b8)
 
 // WiFi signal strength indicators
 #define COLOR_WIFI_BAR TFT_WHITE
