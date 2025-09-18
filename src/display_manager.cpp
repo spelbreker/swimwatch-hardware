@@ -1,3 +1,12 @@
+
+#include <stdint.h>
+#include "display_manager.h"
+
+// ...existing code...
+// Implementation after constructor and other methods
+void DisplayManager::sendTFTCommand(uint8_t cmd) {
+    tft.writecommand(cmd);
+}
 /**
  * @file display_manager.cpp
  * @brief Display Manager for LilyGO T-Display S3 Swimming Stopwatch

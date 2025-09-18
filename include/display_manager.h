@@ -1,3 +1,8 @@
+
+
+#ifndef DISPLAY_MANAGER_H
+#define DISPLAY_MANAGER_H
+
 /**
  * @file display_manager.h
  * @brief Display Manager for LilyGO T-Display S3 Swimming Stopwatch
@@ -18,8 +23,11 @@
  * @date 2025
  */
 
-#ifndef DISPLAY_MANAGER_H
-#define DISPLAY_MANAGER_H
+#include <stdint.h>
+#include <TFT_eSPI.h>
+#include <SPI.h>
+
+#include <stdint.h>
 
 #include <TFT_eSPI.h>
 #include <SPI.h>
@@ -160,6 +168,8 @@ private:
     String formatTimeDisplay(uint32_t milliseconds, bool showCentiseconds = true);
     
 public:
+    // Send raw command to TFT (for sleep/off)
+    void sendTFTCommand(uint8_t cmd);
     // ===================================
     // Constructor and Initialization
     // ===================================

@@ -43,6 +43,7 @@
 #include "display_manager.h"
 #include "button_manager.h"
 #include "websocket_stopwatch.h"
+#include "energy_manager.h"
 
 // Global module instances
 CaptivePortalManager* captivePortal = nullptr;
@@ -50,6 +51,7 @@ ConnectivityManager connectivity;
 DisplayManager display;
 ButtonManager buttons;
 WebSocketStopwatch stopwatch;
+EnergyManager energyManager(display);
 
 // Application state
 enum AppMode {
@@ -111,6 +113,11 @@ void setup() {
     if (!display.init()) {
         Serial.println("FATAL: Display initialization failed!");
         while (true) delay(1000);
+    }
+    
+    // Initialize energy management system (test mode enabled)
+    if (!energyManager.init(false)) {
+        Serial.println("ERROR: Energy manager initialization failed!");
     }
     
     // Check if we have stored WiFi credentials
@@ -271,6 +278,14 @@ void normalMode() {
         lastStatusUpdate = now;
     }
     
+    // Check for sleep timeout (only when stopwatch is stopped and sleep is enabled)
+    if (energyManager.isSleepEnabled() && 
+        stopwatch.getState() == STOPWATCH_STOPPED && 
+        energyManager.checkSleepTimeout()) {
+        Serial.println("Sleep timeout reached, entering LIGHT sleep (GPIO2 wake)...");
+        energyManager.enterLightSleep();
+    }
+    
     // Small delay to prevent excessive CPU usage
     delay(10);
 }
@@ -283,11 +298,13 @@ void handleButtonEvents() {
     switch (event) {
         case BUTTON_START_LAP_PRESSED:
             // GPIO0 - Not used for local control (only WebSocket start)
+            energyManager.updateActivityTimer(); // Reset sleep timer on button press
             Serial.println("GPIO0 pressed - No local action (WebSocket start only)");
             break;
             
         case BUTTON_START_2_PRESSED:
             // GPIO2 - Create split time when running
+            energyManager.updateActivityTimer(); // Reset sleep timer on button press
             if (stopwatch.getState() == STOPWATCH_RUNNING) {
                 stopwatch.addLap();
                 Serial.println("Split time created via GPIO2 button");
@@ -298,6 +315,7 @@ void handleButtonEvents() {
             
         case BUTTON_STOP_PRESSED:
             // GPIO14 - Reset functionality (when stopped)
+            energyManager.updateActivityTimer(); // Reset sleep timer on button press
             if (stopwatch.getState() == STOPWATCH_STOPPED) {
                 stopwatch.reset();
                 Serial.println("Stopwatch reset via GPIO14 button");
