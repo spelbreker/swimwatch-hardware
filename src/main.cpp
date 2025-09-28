@@ -232,8 +232,10 @@ void initializeNormalOperation() {
     int rssi = WiFi.RSSI();
     display.updateWiFiStatus("Connected", true, rssi);
     
-    // Show battery status (you can implement actual battery reading later)
-    display.updateBatteryDisplay(3.7f, 85);  // Example values - replace with actual battery reading
+    // Show initial battery status using EnergyManager
+    float batteryVoltage = energyManager.getBatteryVoltage();
+    uint8_t batteryPercentage = energyManager.getBatteryPercentage();
+    display.updateBatteryDisplay(batteryVoltage, batteryPercentage);
     
     // Setup stopwatch callbacks
     stopwatch.onStateChanged = onStopwatchStateChanged;
@@ -389,10 +391,10 @@ void checkConnections() {
         display.updateWebSocketStatus("Connected", true, ping);
     }
     
-    // Update battery status (placeholder - implement actual battery reading)
-    // For T-Display S3, you can read battery voltage via ADC
-    static uint8_t fakeBatteryLevel = 85;
-    display.updateBatteryDisplay(3.7f, fakeBatteryLevel);
+    // Update battery status using EnergyManager
+    float batteryVoltage = energyManager.getBatteryVoltage();
+    uint8_t batteryPercentage = energyManager.getBatteryPercentage();
+    display.updateBatteryDisplay(batteryVoltage, batteryPercentage);
 }
 
 // Callback functions

@@ -70,7 +70,7 @@ private:
     
     // Battery monitoring (if ADC is available)
     static constexpr int BATTERY_ADC_PIN = 4; // GPIO4 for battery voltage
-    static constexpr float BATTERY_MIN_VOLTAGE = 3.2f;
+    static constexpr float BATTERY_MIN_VOLTAGE = 3.0f;  // More realistic minimum for LiPo
     static constexpr float BATTERY_MAX_VOLTAGE = 4.2f;
     
     // Helper methods
