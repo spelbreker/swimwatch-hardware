@@ -45,6 +45,12 @@
 #include "websocket_stopwatch.h"
 #include "energy_manager.h"
 
+// Pin definitions for T-Display S3
+#define PIN_POWER_ON                 15  // Power control pin - MUST be HIGH for battery operation
+#define PIN_BUTTON_1                 0   // GPIO0 - Boot button
+#define PIN_BUTTON_2                 14  // GPIO14 - Reset/Stop button  
+#define PIN_LCD_BL                   38  // Backlight control
+
 // Global module instances
 CaptivePortalManager* captivePortal = nullptr;
 ConnectivityManager connectivity;
@@ -106,6 +112,10 @@ void onSplitTimeReceived(uint8_t lane, const String& time);
 void onDisplayClear();
 
 void setup() {
+    // (POWER ON)IO15 must be set to HIGH before starting, otherwise the screen will not display when using battery
+    pinMode(PIN_POWER_ON, OUTPUT);
+    digitalWrite(PIN_POWER_ON, HIGH);
+    
     Serial.begin(115200);
     Serial.println("\n=== T-Display S3 Stopwatch Starting ===");
     
