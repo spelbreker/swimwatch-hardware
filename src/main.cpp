@@ -295,7 +295,8 @@ void normalMode() {
         stopwatch.getState() == STOPWATCH_STOPPED && 
         energyManager.checkSleepTimeout()) {
         Serial.println("Sleep timeout reached, entering LIGHT sleep (GPIO2 wake)...");
-        energyManager.enterLightSleep();
+        //@TODO temporarily disable light sleep for prod testing
+        //energyManager.enterLightSleep();
     }
     
     // Small delay to prevent excessive CPU usage

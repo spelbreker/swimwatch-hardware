@@ -44,7 +44,7 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
             
             <div class="form-group">
                 <label for="lane">Lane Number:</label>
-                <input type="number" id="lane" name="lane" value="9" min="1" max="99" placeholder="Lane number">
+                <input type="number" id="lane" name="lane" value="9" min="0" max="9" placeholder="Lane number">
             </div>
             
             <input type="submit" value="Save Configuration">
