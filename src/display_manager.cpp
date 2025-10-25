@@ -108,6 +108,7 @@ void DisplayManager::clearScreen() {
     lastLap2 = "";
     lastLap3 = "";
     lastStartupMessage = "";
+    lastEventHeat = "";
     
     // Mark all display areas as needing refresh
     stopwatchAreaDirty = true;
@@ -304,6 +305,17 @@ void DisplayManager::updateStopwatchDisplay(uint32_t elapsedMs, bool isRunning) 
         lastTimeString = timeString;
         stopwatchAreaDirty = false;
     }
+    
+    // Draw Event/Heat at bottom of screen (always visible when set)
+    if (!lastEventHeat.isEmpty()) {
+        tft.setTextFont(4);
+        tft.setTextColor(COLOR_LAP_INFO, COLOR_BACKGROUND);
+        tft.setTextDatum(MC_DATUM);
+        int centerX = MAIN_AREA_X + (MAIN_AREA_WIDTH / 2);
+        int bottomY = DISPLAY_HEIGHT - 10; // 10px from bottom
+        tft.fillRect(MAIN_AREA_X, bottomY - 15, MAIN_AREA_WIDTH, 25, COLOR_BACKGROUND);
+        tft.drawString(lastEventHeat, centerX, bottomY);
+    }
 }
 
 void DisplayManager::showStartupMessage(const String& message) {
@@ -348,6 +360,15 @@ void DisplayManager::clearStartupMessage() {
     }
 }
 
+void DisplayManager::setEventHeat(const String& event, const String& heat) {
+    String combined = String("Event:") + event + " Heat:" + heat;
+    if (combined != lastEventHeat) {
+        lastEventHeat = combined;
+        // Trigger redraw of stopwatch area to include updated event/heat
+        stopwatchAreaDirty = true;
+    }
+}
+
 // ===========================
 // Split Time and Lap Management
 // ===========================
@@ -374,15 +395,18 @@ void DisplayManager::updateLapTime(uint8_t lapNumber, const String& time) {
     }
     
     if (time != *lastLap || lapAreaDirty) {
-        // Clear the lap area
-        tft.fillRect(MAIN_AREA_X, yPos, MAIN_AREA_WIDTH, AREA_LAP1_HEIGHT, COLOR_BACKGROUND);
+        // Clear the lap area (avoid bottom 30px reserved for event/heat)
+        int maxHeight = (yPos + AREA_LAP1_HEIGHT < DISPLAY_HEIGHT - 30) ? AREA_LAP1_HEIGHT : DISPLAY_HEIGHT - 30 - yPos;
+        if (maxHeight > 0) {
+            tft.fillRect(MAIN_AREA_X, yPos, MAIN_AREA_WIDTH, maxHeight, COLOR_BACKGROUND);
         
-        // Draw text if we have a valid time
-        if (!time.isEmpty()) {
-            tft.setTextFont(lapFont);
-            tft.setTextColor(COLOR_LAP_INFO, COLOR_BACKGROUND);
-            tft.setTextDatum(ML_DATUM);
-            tft.drawString(time, MAIN_AREA_X + 5, yPos + (AREA_LAP1_HEIGHT / 2));
+            // Draw text if we have a valid time
+            if (!time.isEmpty()) {
+                tft.setTextFont(lapFont);
+                tft.setTextColor(COLOR_LAP_INFO, COLOR_BACKGROUND);
+                tft.setTextDatum(ML_DATUM);
+                tft.drawString(time, MAIN_AREA_X + 5, yPos + (maxHeight / 2));
+            }
         }
         
         *lastLap = time;
@@ -391,8 +415,11 @@ void DisplayManager::updateLapTime(uint8_t lapNumber, const String& time) {
 }
 
 void DisplayManager::clearLapTimes() {
-    // Clear all lap areas
-    tft.fillRect(MAIN_AREA_X, AREA_LAP1_Y, MAIN_AREA_WIDTH, AREA_LAP1_HEIGHT + AREA_LAP2_HEIGHT + AREA_LAP3_HEIGHT, COLOR_BACKGROUND);
+    // Clear all lap areas (but not bottom 30px reserved for event/heat)
+    int clearHeight = (DISPLAY_HEIGHT - 30) - AREA_LAP1_Y;
+    if (clearHeight > 0) {
+        tft.fillRect(MAIN_AREA_X, AREA_LAP1_Y, MAIN_AREA_WIDTH, clearHeight, COLOR_BACKGROUND);
+    }
     lastLap1 = "";
     lastLap2 = "";
     lastLap3 = "";
@@ -489,6 +516,26 @@ void DisplayManager::updateLaneInfo(uint8_t laneNumber) {
         tft.drawString(laneText, centerX, centerY);
         
         lastLaneInfo = laneText;
+        laneAreaDirty = false;
+    }
+}
+
+void DisplayManager::updateRoleInfo(const String& role, const String& event, const String& heat, uint8_t laneNumber) {
+    String text;
+    if (role == "starter") {
+        text = String("Starter");
+    } else {
+        text = String("Lane\n") + String(laneNumber);
+    }
+    if (text != lastLaneInfo || laneAreaDirty) {
+        tft.fillRect(STATUS_AREA_X, AREA_LANE_INFO_Y, STATUS_AREA_WIDTH, AREA_LANE_INFO_HEIGHT, COLOR_SIDEBAR_BG);
+        tft.setTextFont(2);
+        tft.setTextColor(TFT_WHITE, COLOR_SIDEBAR_BG);
+        tft.setTextDatum(MC_DATUM);
+        int centerX = STATUS_AREA_X + (STATUS_AREA_WIDTH / 2);
+        int centerY = AREA_LANE_INFO_Y + (AREA_LANE_INFO_HEIGHT / 2);
+        tft.drawString(text, centerX, centerY);
+        lastLaneInfo = text;
         laneAreaDirty = false;
     }
 }

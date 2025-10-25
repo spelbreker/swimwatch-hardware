@@ -144,6 +144,7 @@ private:
     String lastLap2;
     String lastLap3;
     String lastStartupMessage;
+    String lastEventHeat;
     
     // Dirty flags for selective area updates
     bool stopwatchAreaDirty;
@@ -202,6 +203,9 @@ public:
     void showStartupMessage(const String& message);
     void clearStartupMessage();
     
+    // Show Event/Heat under the stopwatch time (left side)
+    void setEventHeat(const String& event, const String& heat);
+    
     // ===================================
     // Split Time Management
     // ===================================
@@ -218,6 +222,7 @@ public:
     void updateWiFiStatus(const String& status, bool isConnected = false, int rssi = 0);
     void updateWebSocketStatus(const String& status, bool isConnected = false, int pingMs = -1);
     void updateLaneInfo(uint8_t laneNumber);
+    void updateRoleInfo(const String& role, const String& event, const String& heat, uint8_t laneNumber);
     void updateBatteryDisplay(float voltage, uint8_t percentage);
     
     // ===================================

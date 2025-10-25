@@ -2,20 +2,14 @@
  * LilyGO T-Display S3 Stopwatch - Remote Split Timer
  * 
  * Hardware:
- * - BUTTON1 (GPIO0):  No local action (WebSocket start only)
- * - BUTTON2 (GPIO14): Reset (when stopped)
- * - BUTTON3 (GPIO2):  Create split time (when running)
- * - Display: ST7789V via TFT_eSPI
+ * - BUTTON3 (GPIO2): Create split time when running (lane mode) or send start (starter mode)
+ * - Display: ST7789V 320x170 via TFT_eSPI
  * 
  * Functionality:
- * - Stopwatch starts ONLY via WebSocket server command
- * - GPIO2 button creates split times and sends to server
- * void onSplitTime(int lane, const String& time) {
-    Serial.printf("Split time received for lane %d: %s\n", lane, time.c_str());
-    // Split times are now handled by the onSplit function
-    // This function can be used for additional processing if needed
-}y shows last 3 split times in rolling fashion
- * - Reset via GPIO14 when stopped
+ * - Stopwatch starts via WebSocket server command (lane mode) or GPIO2 button (starter mode)
+ * - GPIO2 button creates split times and sends to server (lane mode)
+ * - GPIO2 button sends start command to server (starter mode)
+ * - Display shows last 3 split times in rolling fashion
  * - Uses internal ESP32 timer (millis()) for accurate timing
  * 
  * WebSocket Messages:
@@ -47,13 +41,9 @@
 
 // Pin definitions for T-Display S3
 #define PIN_POWER_ON                 15  // Power control pin - MUST be HIGH for battery operation
-#define PIN_BUTTON_1                 0   // GPIO0 - Boot button
-#define PIN_BUTTON_2                 14  // GPIO14 - Reset/Stop button  
-#define PIN_LCD_BL                   38  // Backlight control
 
 // Global module instances
 CaptivePortalManager* captivePortal = nullptr;
-ConnectivityManager connectivity;
 DisplayManager display;
 ButtonManager buttons;
 WebSocketStopwatch stopwatch;
@@ -84,6 +74,7 @@ struct AppConfig {
     uint16_t wsPort;
     uint8_t laneNumber;
     bool useSSL;
+    String role;         // "lane" or "starter"
 } config;
 
 // Forward declarations
@@ -126,6 +117,7 @@ void setup() {
     }
     
     // Initialize energy management system (test mode enabled)
+    //@TODO disabled for now it not working as intented and saved not enough power
     if (!energyManager.init(false)) {
         Serial.println("ERROR: Energy manager initialization failed!");
     }
@@ -187,11 +179,12 @@ void loadConfiguration() {
     config.wsPort = prefs.getUInt("ws_port", 443);
     config.laneNumber = prefs.getUInt("lane", 9);
     config.useSSL = (config.wsPort == 443);
+    config.role = prefs.getString("role", "lane");
     
     prefs.end();
     
-    Serial.printf("Config - Server: %s:%d, Lane: %d, SSL: %s\n", 
-                  config.wsServer.c_str(), config.wsPort, config.laneNumber,
+    Serial.printf("Config - Server: %s:%d, Role: %s, Lane: %d, SSL: %s\n", 
+                  config.wsServer.c_str(), config.wsPort, config.role.c_str(), config.laneNumber,
                   config.useSSL ? "yes" : "no");
 }
 
@@ -228,7 +221,12 @@ void initializeNormalOperation() {
     // Setup display
     display.clearScreen();
     display.drawBorders();
-    display.updateLaneInfo(config.laneNumber);
+    if (config.role == "starter") {
+        display.setEventHeat("1", "1");
+        display.updateRoleInfo(config.role, String(""), String(""), config.laneNumber);
+    } else {
+        display.updateLaneInfo(config.laneNumber);
+    }
     int rssi = WiFi.RSSI();
     display.updateWiFiStatus("Connected", true, rssi);
     
@@ -245,8 +243,6 @@ void initializeNormalOperation() {
     stopwatch.onEventHeatChanged = onEventHeatChanged;
     stopwatch.onSplitTimeReceived = onSplitTimeReceived;
     stopwatch.onDisplayClear = onDisplayClear;
-    
-
     
     // Initialize WebSocket connection
     display.showStartupMessage("Connecting to server...");
@@ -290,16 +286,14 @@ void normalMode() {
         lastStatusUpdate = now;
     }
     
-    // Check for sleep timeout (only when stopwatch is stopped and sleep is enabled)
-    if (energyManager.isSleepEnabled() && 
-        stopwatch.getState() == STOPWATCH_STOPPED && 
-        energyManager.checkSleepTimeout()) {
-        Serial.println("Sleep timeout reached, entering LIGHT sleep (GPIO2 wake)...");
-        //@TODO temporarily disable light sleep for prod testing
-        //energyManager.enterLightSleep();
-    }
+    // Check for sleep timeout when idle
+    // if (energyManager.isSleepEnabled() && 
+    //     stopwatch.getState() == STOPWATCH_STOPPED && 
+    //     energyManager.checkSleepTimeout()) {
+    //     Serial.println("Sleep timeout reached, entering light sleep...");
+    //     energyManager.enterLightSleep();
+    // }
     
-    // Small delay to prevent excessive CPU usage
     delay(10);
 }
 
@@ -308,39 +302,25 @@ void handleButtonEvents() {
     
     ButtonEvent event = buttons.getButtonEvent();
     
-    switch (event) {
-        case BUTTON_START_LAP_PRESSED:
-            // GPIO0 - Not used for local control (only WebSocket start)
-            energyManager.updateActivityTimer(); // Reset sleep timer on button press
-            Serial.println("GPIO0 pressed - No local action (WebSocket start only)");
-            break;
-            
-        case BUTTON_START_2_PRESSED:
-            // GPIO2 - Create split time when running
-            energyManager.updateActivityTimer(); // Reset sleep timer on button press
+    if (event == BUTTON_LAP_PRESSED) {
+        energyManager.updateActivityTimer();
+        if (config.role == "starter") {
+            // Starter sends start to server
+            Serial.println("Starter button pressed - sending start over WS");
+            String ev = stopwatch.getCurrentEvent();
+            String ht = stopwatch.getCurrentHeat();
+            if (ev.length() == 0) ev = "1";
+            if (ht.length() == 0) ht = "1";
+            stopwatch.sendStart(ev, ht);
+        } else {
+            // Lane device creates a split if running
             if (stopwatch.getState() == STOPWATCH_RUNNING) {
                 stopwatch.addLap();
-                Serial.println("Split time created via GPIO2 button");
+                Serial.println("Split time created via button");
             } else {
-                Serial.println("GPIO2 pressed - Stopwatch not running, no split time created");
+                Serial.println("Button pressed - stopwatch not running (lane mode)");
             }
-            break;
-            
-        case BUTTON_STOP_PRESSED:
-            // GPIO14 - Reset functionality (when stopped)
-            energyManager.updateActivityTimer(); // Reset sleep timer on button press
-            if (stopwatch.getState() == STOPWATCH_STOPPED) {
-                stopwatch.reset();
-                Serial.println("Stopwatch reset via GPIO14 button");
-            } else {
-                Serial.println("GPIO14 pressed - Stopwatch running, no reset action");
-            }
-            break;
-            
-        case BUTTON_NONE:
-        default:
-            // No button event
-            break;
+        }
     }
 }
 
@@ -374,66 +354,43 @@ void updateDisplay() {
 }
 
 void checkConnections() {
-    // Check WiFi connection
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("WiFi connection lost");
         display.updateWiFiStatus("Disconnected", false);
-        // Could implement reconnection logic here
     } else {
-        int rssi = WiFi.RSSI();
-        display.updateWiFiStatus("Connected", true, rssi);
+        display.updateWiFiStatus("Connected", true, WiFi.RSSI());
     }
     
-    // Check WebSocket connection
     if (!stopwatch.isConnected()) {
         display.updateWebSocketStatus("Disconnected", false);
     } else {
-        int ping = stopwatch.getPingMs();
-        display.updateWebSocketStatus("Connected", true, ping);
+        display.updateWebSocketStatus("Connected", true, stopwatch.getPingMs());
     }
     
-    // Update battery status using EnergyManager
-    float batteryVoltage = energyManager.getBatteryVoltage();
-    uint8_t batteryPercentage = energyManager.getBatteryPercentage();
-    display.updateBatteryDisplay(batteryVoltage, batteryPercentage);
+    display.updateBatteryDisplay(
+        energyManager.getBatteryVoltage(), 
+        energyManager.getBatteryPercentage()
+    );
 }
 
 // Callback functions
 void onStopwatchStateChanged(StopwatchState newState) {
-    Serial.printf("Stopwatch state changed to: %d\n", newState);
-    
-    switch (newState) {
-        case STOPWATCH_STOPPED:
-            Serial.println("Stopwatch stopped");
-            // Clear split display when stopped/reset
-            clearSplitDisplay();
-            break;
-        case STOPWATCH_RUNNING:
-            Serial.println("Stopwatch started");
-            break;
-        case STOPWATCH_PAUSED:
-            Serial.println("Stopwatch paused");
-            break;
+    if (newState == STOPWATCH_STOPPED) {
+        clearSplitDisplay();
     }
+    Serial.printf("Stopwatch state: %d\n", newState);
 }
 
-void onLapAdded(uint8_t lapNumber, uint32_t lapTime, uint32_t totalTime) {
-    Serial.printf("Split %d added - Total time: %s\n", 
-                  lapNumber, 
-                  stopwatch.formatTime(totalTime).c_str());
+void onLapAdded(uint8_t lapNumber, uint32_t /* lapTime */, uint32_t totalTime) {
+    Serial.printf("Split %d: %s\n", lapNumber, stopwatch.formatTime(totalTime).c_str());
     
-    // Shift existing splits up to make room for new one
     lastSplits[0] = lastSplits[1];
     lastSplits[1] = lastSplits[2];
-    
-    // Add new split to the end
     lastSplits[2] = {lapNumber, totalTime, stopwatch.formatTime(totalTime), true};
     
-    // Update display with last 3 splits
     for (int i = 0; i < 3; i++) {
         if (lastSplits[i].valid) {
-            String displayText = "Split - " + String(lastSplits[i].splitNumber) + ": " + lastSplits[i].formattedTime;
-            display.updateLapTime(i + 1, displayText);
+            display.updateLapTime(i + 1, "Split - " + String(lastSplits[i].splitNumber) + ": " + lastSplits[i].formattedTime);
         } else {
             display.updateLapTime(i + 1, "");
         }
@@ -441,46 +398,35 @@ void onLapAdded(uint8_t lapNumber, uint32_t lapTime, uint32_t totalTime) {
 }
 
 void onConnectionChanged(bool connected) {
-    if (connected) {
-        Serial.println("WebSocket connected successfully");
-        int ping = stopwatch.getPingMs();
-        display.updateWebSocketStatus("Connected", true, ping);
-    } else {
-        Serial.println("WebSocket disconnected");
-        display.updateWebSocketStatus("Disconnected", false);
-    }
+    Serial.printf("WebSocket %s\n", connected ? "connected" : "disconnected");
+    display.updateWebSocketStatus(connected ? "Connected" : "Disconnected", connected, 
+                                   connected ? stopwatch.getPingMs() : 0);
 }
 
 void onTimeSync(bool synced) {
-    if (synced) {
-        Serial.println("Time synchronized with server");
-    } else {
-        Serial.println("Time synchronization lost");
-    }
+    Serial.printf("Time sync %s\n", synced ? "active" : "lost");
 }
 
 void onEventHeatChanged(const String& event, const String& heat) {
-    Serial.printf("Event/Heat changed: %s / %s\n", event.c_str(), heat.c_str());
-    // Event/heat info could be shown in one of the lap areas or as a temporary message
+    Serial.printf("Event/Heat: %s/%s\n", event.c_str(), heat.c_str());
+    if (config.role == "starter") {
+        display.setEventHeat(event, heat);
+    }
 }
 
 void onSplitTimeReceived(uint8_t lane, const String& time) {
-    Serial.printf("Split time received for lane %d: %s\n", lane, time.c_str());
-    // Split times are now handled by the onSplit function which shows them properly
-    // This function is for receiving individual split times from other lanes
+    Serial.printf("Lane %d split: %s\n", lane, time.c_str());
 }
 
 void onDisplayClear() {
-    Serial.println("Display clear requested");
     display.clearLapTimes();
     clearSplitDisplay();
+    Serial.println("Display cleared");
 }
 
 void clearSplitDisplay() {
-    // Clear the split times tracking
     for (int i = 0; i < 3; i++) {
         lastSplits[i] = {0, 0, "", false};
         display.updateLapTime(i + 1, "");
     }
-    Serial.println("Split display cleared");
 }

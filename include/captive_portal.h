@@ -18,6 +18,7 @@ private:
     String configuredWsServer;
     String configuredWsPort;
     String configuredLane;
+    String configuredRole;        // "lane" or "starter"
     
     void setupWebServer();
     void handleRoot();
@@ -38,6 +39,7 @@ public:
     String getConfiguredWsServer() const { return configuredWsServer; }
     String getConfiguredWsPort() const { return configuredWsPort; }
     String getConfiguredLane() const { return configuredLane; }
+    String getConfiguredRole() const { return configuredRole; }
     
     // Save configuration to preferences
     void saveConfiguration();

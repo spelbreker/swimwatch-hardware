@@ -16,6 +16,8 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
         input[type="submit"]:hover { background-color: #45a049; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; font-weight: bold; }
+        .inline { display:flex; gap:12px; align-items:center; }
+        .half { width: 50%; }
     </style>
 </head>
 <body>
@@ -43,13 +45,29 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
             </div>
             
             <div class="form-group">
+                <label for="role">Device Role:</label>
+                <select id="role" name="role">
+                    <option value="lane" selected>Lane</option>
+                    <option value="starter">Starter</option>
+                </select>
+            </div>
+
+            <div id="laneFields" class="form-group">
                 <label for="lane">Lane Number:</label>
                 <input type="number" id="lane" name="lane" value="9" min="0" max="9" placeholder="Lane number">
             </div>
-            
             <input type="submit" value="Save Configuration">
         </form>
     </div>
+    <script>
+        const roleSel = document.getElementById('role');
+        const laneDiv = document.getElementById('laneFields');
+        function updateRoleUI(){
+            laneDiv.style.display = (roleSel.value === 'starter') ? 'none' : 'block';
+        }
+        roleSel.addEventListener('change', updateRoleUI);
+        updateRoleUI();
+    </script>
 </body>
 </html>)rawliteral";
 
@@ -120,12 +138,22 @@ void CaptivePortalManager::handleConfig() {
         configuredPassword = server.hasArg("password") ? server.arg("password") : "";
         configuredWsServer = server.hasArg("server") ? server.arg("server") : "scherm.azckamp.nl";
         configuredWsPort = server.hasArg("port") ? server.arg("port") : "443";
-        configuredLane = server.hasArg("lane") ? server.arg("lane") : "9";
-        
+    configuredRole = server.hasArg("role") ? server.arg("role") : "lane";
+    configuredLane = server.hasArg("lane") ? server.arg("lane") : "9";
+
+        // Validate role parameter
+        if (configuredRole != "lane" && configuredRole != "starter") {
+            server.send(400, "text/plain", "Invalid role parameter");
+            return;
+        }
+
         Serial.println("Configuration received:");
         Serial.println("SSID: " + configuredSSID);
         Serial.println("Server: " + configuredWsServer + ":" + configuredWsPort);
-        Serial.println("Lane: " + configuredLane);
+        Serial.println("Role: " + configuredRole);
+        if (configuredRole == "lane") {
+            Serial.println("Lane: " + configuredLane);
+        }
         
         // Save configuration
         saveConfiguration();
@@ -158,6 +186,7 @@ void CaptivePortalManager::saveConfiguration() {
     preferences.putString("ws_server", configuredWsServer);
     preferences.putUInt("ws_port", configuredWsPort.toInt());
     preferences.putUInt("lane", configuredLane.toInt());
+    preferences.putString("role", configuredRole.length() ? configuredRole : String("lane"));
     preferences.end();
     
     Serial.println("Configuration saved to preferences");
