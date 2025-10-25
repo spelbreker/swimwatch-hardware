@@ -1,417 +1,486 @@
 /**
- * LilyGO T-Display S3 Stopwatch - Hardware Interrupts & WebSocket Client
- * * Hardware:
- * - BUTTON1 (Start/Lap): GPIO0 (active LOW, internal pullup)
- * - BUTTON2 (Stop):      GPIO14 (active LOW, internal pullup)
- * - BUTTON3 (Start):     GPIO2 (active HIGH, externe pull-down weerstand vereist)
- * -> BELANGRIJK: Voor BUTTON3 (GPIO2) sluit de knop aan tussen 3.3V en GPIO2.
- * Plaats een externe 1kΩ weerstand tussen GPIO2 en GND.
+ * LilyGO T-Display S3 Stopwatch - Remote Split Timer
+ * 
+ * Hardware:
+ * - BUTTON1 (GPIO0):  No local action (WebSocket start only)
+ * - BUTTON2 (GPIO14): Reset (when stopped)
+ * - BUTTON3 (GPIO2):  Create split time (when running)
  * - Display: ST7789V via TFT_eSPI
- * * Features:
- * - Hardware interrupt buttons
- * - Software debounce
- * - Time measurement using millis()
- * - 25Hz display refresh rate
- * - WiFi connectivity with stored credentials
- * - WebSocket client with SSL support
- * * WebSocket Events:
- * Receive:
- * - {"type":"start","time":timestamp} : Start stopwatch with server time
- * - {"type":"reset"} : Reset stopwatch to zero
- * * Send:
- * - {"type":"split","lane":"X","time-ms":timestamp,"time":"MM:SS:MS"} : Split time
- * * Server:
- * - wss://scherm.azckamp.nl:443
+ * 
+ * Functionality:
+ * - Stopwatch starts ONLY via WebSocket server command
+ * - GPIO2 button creates split times and sends to server
+ * void onSplitTime(int lane, const String& time) {
+    Serial.printf("Split time received for lane %d: %s\n", lane, time.c_str());
+    // Split times are now handled by the onSplit function
+    // This function can be used for additional processing if needed
+}y shows last 3 split times in rolling fashion
+ * - Reset via GPIO14 when stopped
+ * - Uses internal ESP32 timer (millis()) for accurate timing
+ * 
+ * WebSocket Messages:
+ * - Receives: {"type":"start","event":1,"heat":2,"timestamp":...} - Start stopwatch
+ * - Receives: {"type":"reset","timestamp":...} - Reset stopwatch  
+ * - Receives: {"type":"time_sync","server_time":...} - Time sync
+ * - Receives: {"type":"pong","client_ping_time":...,"server_time":...} - Ping response
+ * - Sends: {"type":"ping","time":...} - Time sync ping
+ * - Sends: {"type":"split","lane":X,"timestamp":...} - Split time
+ * 
+ * Flow:
+ * 1. Check if WiFi credentials exist in preferences
+ * 2. If yes, try to connect to WiFi
+ * 3. If no credentials or connection fails, start captive portal
+ * 4. After successful WiFi setup, restart device
+ * 5. On restart, proceed with normal stopwatch operation
+ * 6. Wait for WebSocket start command to begin timing
+ * 7. Use GPIO2 to create split times during operation
  */
 
-#include <TFT_eSPI.h>
-#include <SPI.h>
-#include <WiFi.h>
+#include <Arduino.h>
 #include <Preferences.h>
-#include <WebSocketsClient.h>
-#include <ArduinoJson.h>
+#include "captive_portal.h"
+#include "connectivity.h"
+#include "display_manager.h"
+#include "button_manager.h"
+#include "websocket_stopwatch.h"
+#include "energy_manager.h"
 
-// Constants and Pin Definitions
-#define BUTTON_START_LAP_PIN 0
-#define BUTTON_STOP_PIN      14
-#define BUTTON_START_2_PIN   2      // Additional start button on GPIO2
-#define DEBOUNCE_TIME_MS     100     // Reduced debounce time for better responsiveness
-#define DISPLAY_REFRESH_MS   50     // 20Hz refresh rate
-#define WIFI_CONNECT_TIMEOUT_MS 15000 // 15s connect timeout
+// Pin definitions for T-Display S3
+#define PIN_POWER_ON                 15  // Power control pin - MUST be HIGH for battery operation
+#define PIN_BUTTON_1                 0   // GPIO0 - Boot button
+#define PIN_BUTTON_2                 14  // GPIO14 - Reset/Stop button  
+#define PIN_LCD_BL                   38  // Backlight control
 
-constexpr uint8_t MAX_LAPS = 90;      // Store up to 50 laps
-constexpr uint8_t DISPLAY_LAPS = 5;   // Show only last 5 laps
+// Global module instances
+CaptivePortalManager* captivePortal = nullptr;
+ConnectivityManager connectivity;
+DisplayManager display;
+ButtonManager buttons;
+WebSocketStopwatch stopwatch;
+EnergyManager energyManager(display);
 
-// Type definitions
-enum StopwatchState { STOPPED, RUNNING };
-struct LapData { uint32_t lapTimeMs, totalTimeMs; };
+// Application state
+enum AppMode {
+    MODE_SETUP,     // Captive portal mode
+    MODE_NORMAL     // Normal stopwatch operation
+};
+
+AppMode currentMode = MODE_SETUP;
+bool systemInitialized = false;
+
+// Split time tracking for display (last 3 splits)
+struct SplitTimeDisplay {
+    uint8_t splitNumber;
+    uint32_t totalTime;
+    String formattedTime;
+    bool valid;
+};
+
+SplitTimeDisplay lastSplits[3] = {{0, 0, "", false}, {0, 0, "", false}, {0, 0, "", false}};
+
+// Configuration loaded from preferences
+struct AppConfig {
+    String wsServer;
+    uint16_t wsPort;
+    uint8_t laneNumber;
+    bool useSSL;
+} config;
 
 // Forward declarations
-void resetStopwatch();
-void drawStopwatch(uint32_t currentElapsedMs);
-void processStartLap();
-void processStop();
-void addLap(uint32_t currentElapsedMs);
-void drawLaps();
-String formatTime(uint32_t ms);
-void connectWiFi();
-void saveWiFiCredentials(const char* ssid, const char* password);
-bool getWiFiCredentials(String &ssid, String &password);
-void webSocketEvent(WStype_t type, uint8_t * payload, size_t length);
-void setupWebSocket();
+void loadConfiguration();
+void setupMode();
+void normalMode();
+void initializeNormalOperation();
+void handleButtonEvents();
+void updateDisplay();
+void checkConnections();
+void clearSplitDisplay();
 
-// Global variables
-Preferences preferences;
-TFT_eSPI tft = TFT_eSPI();
+// Normal mode timing variables
+unsigned long lastDisplayUpdate = 0;
+unsigned long lastStatusUpdate = 0;
+const unsigned long DISPLAY_UPDATE_INTERVAL = 100;    // Update display every 100ms
+const unsigned long STATUS_UPDATE_INTERVAL = 1000;    // Update status every second
 
-volatile bool startLapInterrupt = false;
-volatile bool stopInterrupt = false;
-volatile bool start2Interrupt = false;
+// Callback functions for stopwatch events
+void onStopwatchStateChanged(StopwatchState newState);
+void onLapAdded(uint8_t lapNumber, uint32_t lapTime, uint32_t totalTime);
+void onConnectionChanged(bool connected);
+void onTimeSync(bool synced);
+void onEventHeatChanged(const String& event, const String& heat);
+void onSplitTimeReceived(uint8_t lane, const String& time);
+void onDisplayClear();
 
-volatile uint32_t lastStartLapInterrupt = 0;
-volatile uint32_t lastStopInterrupt = 0;
-volatile uint32_t lastStart2Interrupt = 0;
-
-StopwatchState stopwatchState = STOPPED;
-uint32_t startTimeMs = 0;
-uint32_t elapsedMs = 0;
-uint32_t lastDisplayUpdateMs = 0;
-
-LapData laps[MAX_LAPS];
-uint8_t lapCount = 0;
-
-// WebSocket Client
-WebSocketsClient webSocket;
-bool wsConnected = false;
-
-// Additional global variables
-uint64_t serverStartTimeMs = 0;   // Server start time in milliseconds
-uint8_t laneNumber = 9;   // Default lane number, can be changed later
-
-// ---------- Interrupt Service Routines ----------
-void IRAM_ATTR handleStart2Interrupt() {
-  uint32_t now = millis();
-  // Controleer of de knop daadwerkelijk HOOG is bij een RISING edge,
-  // dit helpt bij het filteren van ruis als de pull-down niet perfect is.
-  if (digitalRead(BUTTON_START_2_PIN) == HIGH && now - lastStart2Interrupt > DEBOUNCE_TIME_MS) {
-    start2Interrupt = true;
-    lastStart2Interrupt = now;
-    // Serial.println("Start button 2 pressed"); // Verplaatst naar processStartLap()
-  }
-}
-
-void IRAM_ATTR handleStartLapInterrupt() {
-  uint32_t now = millis();
-  if (now - lastStartLapInterrupt > DEBOUNCE_TIME_MS) {
-    startLapInterrupt = true;
-    lastStartLapInterrupt = now;
-    // Serial.println("Start/Lap button pressed"); // Verplaatst naar processStartLap()
-  }
-}
-
-void IRAM_ATTR handleStopInterrupt() {
-  uint32_t now = millis();
-  if (now - lastStopInterrupt > DEBOUNCE_TIME_MS) {
-    stopInterrupt = true;
-    lastStopInterrupt = now;
-    // Serial.println("Stop button pressed"); // Verplaatst naar processStop()
-  }
-}
-
-// --------------- Setup -----------------
 void setup() {
-  // Initialize Serial first for debugging
-  Serial.begin(115200);
-  Serial.println("Starting setup...");
-
-  // Initialize display
-  tft.init();
-  tft.setRotation(1);
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextFont(4);
-  tft.setTextColor(TFT_GREEN, TFT_BLACK);
-  Serial.println("Display initialized"); 
-  
-  // Button setup with explicit GPIO configuration
-  pinMode(BUTTON_START_LAP_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_STOP_PIN, INPUT_PULLUP);
-  // Aangepast: Gebruik INPUT voor BUTTON_START_2_PIN met externe pull-down
-  pinMode(BUTTON_START_2_PIN, INPUT_PULLDOWN); // GPIO2 is connected to 3.3V, so we use INPUT_PULLUP
-  Serial.println("Buttons configured");
-
-  // Attach interrupts with explicit GPIO numbers
-  attachInterrupt(BUTTON_START_LAP_PIN, handleStartLapInterrupt, FALLING);
-  attachInterrupt(BUTTON_STOP_PIN, handleStopInterrupt, FALLING);
-  // Aangepast: Gebruik RISING voor BUTTON_START_2_PIN (knop verbindt met 3.3V)
-  attachInterrupt(BUTTON_START_2_PIN, handleStart2Interrupt, RISING);    
-  Serial.println("Interrupts attached");
-
-  resetStopwatch();
-  drawStopwatch(0);
-  Serial.println("Stopwatch initialized");
-
-  // Initialize WiFi last
-  //saveWiFiCredentials("SSID","PASSWORD"); // Uncomment to save credentials
-  connectWiFi();
-  setupWebSocket();
-}
-
-// --------------- Loop -----------------
-void loop() {
-  uint32_t now = millis();
-
-  // ---- Interrupts verwerken ----
-  if (startLapInterrupt) {
-    startLapInterrupt = false;
-    Serial.println("Start/Lap button pressed"); // Debug output verplaatst
-    processStartLap();
-  }
-  if (start2Interrupt) { // Aparte check voor start2Interrupt
-    start2Interrupt = false;
-    Serial.println("Start button 2 pressed"); // Debug output verplaatst
-    processStartLap(); // Roep dezelfde functie aan als Start/Lap
-  }
-  if (stopInterrupt) {
-    stopInterrupt = false;
-    Serial.println("Stop button pressed"); // Debug output verplaatst
-    processStop();
-  }
-
-  // ---- WebSocket Loop ----
-  if (WiFi.status() == WL_CONNECTED) {
-    webSocket.loop();
-  }
-
-  // ---- Display Update ----
-  uint32_t showElapsedMs = (stopwatchState == RUNNING)
-      ? now - startTimeMs
-      : elapsedMs;
-  if (now - lastDisplayUpdateMs > DISPLAY_REFRESH_MS || lastDisplayUpdateMs == 0) {
-    drawStopwatch(showElapsedMs);
-    lastDisplayUpdateMs = now;
-  }
-
-  // ---- WebSocket loop ----
-  webSocket.loop();
-}
-
-// ------- Functionaliteit ---------
-void processStartLap() {
-  if (stopwatchState == STOPPED) {
-    startTimeMs = millis();
-    lapCount = 0;
-    stopwatchState = RUNNING;
-  } else if (stopwatchState == RUNNING && lapCount < MAX_LAPS) {
-    uint32_t nowMs = millis();
-    uint32_t elapsedTime = nowMs - startTimeMs;
-    addLap(nowMs - startTimeMs);
-      // Send lap time via WebSocket
-    if (wsConnected && serverStartTimeMs > 0) {
-      StaticJsonDocument<200> doc;
-      doc["type"] = "split";
-      doc["lane"] = String(laneNumber);
-      doc["time-ms"] = serverStartTimeMs + elapsedTime;
-      doc["time"] = formatTime(elapsedTime);
-      
-      char jsonBuffer[200];
-      serializeJson(doc, jsonBuffer);
-      webSocket.sendTXT(jsonBuffer);
-      
-      // Debug output
-      Serial.printf("Sending split for lane %d: %s\n", laneNumber, jsonBuffer);
-    }
-  }
-}
-
-void processStop() {
-  if (stopwatchState == RUNNING) {
-    elapsedMs = millis() - startTimeMs;
-    stopwatchState = STOPPED;
-    drawLaps();
-  }
-}
-
-void resetStopwatch() {
-  stopwatchState = STOPPED;
-  startTimeMs = 0;
-  elapsedMs = 0;
-  lapCount = 0;
-  for (uint8_t i = 0; i < MAX_LAPS; ++i) {
-    laps[i].lapTimeMs = 0;
-    laps[i].totalTimeMs = 0;
-  }
-}
-
-void addLap(uint32_t currentElapsedMs) {
-  uint32_t lapTime = currentElapsedMs;
-  if (lapCount > 0) {
-    lapTime = currentElapsedMs - laps[lapCount - 1].totalTimeMs;
-  }
-  laps[lapCount].lapTimeMs = lapTime;
-  laps[lapCount].totalTimeMs = currentElapsedMs;
-  lapCount++;
-  drawLaps();
-}
-
-// -------------- Display Logic ---------------
-void drawStopwatch(uint32_t currentElapsedMs) {
-  tft.fillRect(0, 0, 320, 60, TFT_BLACK);
-  tft.setCursor(10, 10);
-  tft.setTextFont(7);
-  tft.setTextColor(TFT_GREEN, TFT_BLACK);
-  tft.print(formatTime(currentElapsedMs));
-}
-
-void drawLaps() {
-  tft.fillRect(0, 65, 320, 170-65, TFT_BLACK);
-  tft.setTextFont(2);
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  
-  // Calculate start index to show last DISPLAY_LAPS
-  int startIdx = (lapCount > DISPLAY_LAPS) ? lapCount - DISPLAY_LAPS : 0;
-  
-  for (int i = startIdx; i < lapCount; ++i) {
-    int displayRow = i - startIdx;
-    tft.setCursor(10, 70 + displayRow*20);
-    tft.printf("Lap %d: %s (%s)", i+1, formatTime(laps[i].lapTimeMs).c_str(), formatTime(laps[i].totalTimeMs).c_str());
-  }
-  
-  if (lapCount > DISPLAY_LAPS) {
-    tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.setCursor(280, 70);
-    tft.printf("%d+", startIdx);
-  }
-  
-  if (stopwatchState == STOPPED && lapCount > 0) {
-    tft.setCursor(10, 70 + lapCount*20);
-    tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.print("Press Start to reset.");
-  }
-}
-
-// ------------- Tijd notatie -----------------
-String formatTime(uint32_t ms) {
-  uint16_t minutes = ms / 60000;
-  uint8_t seconds = (ms / 1000) % 60;
-  uint8_t millisec = (ms % 1000) / 10;
-  char buffer[16];
-  sprintf(buffer, "%02d:%02d:%02d", minutes, seconds, millisec);
-  return String(buffer);
-}
-
-// ------------- WiFi Connection Logic ---------------
-
-void saveWiFiCredentials(const char* ssid, const char* password) {
-    preferences.begin("wifi", false);
-    preferences.putString("ssid", ssid);
-    preferences.putString("password", password);
-    preferences.end();
-    Serial.println("WiFi credentials saved");
-}
-
-bool getWiFiCredentials(String &ssid, String &password) {
-    preferences.begin("wifi", true);
-    ssid = preferences.getString("ssid", "");
-    password = preferences.getString("password", "");
-    preferences.end();
-    return ssid.length() > 0 && password.length() > 0;
-}
-
-void showWiFiStatus(const char* message) {
-    tft.fillRect(0, 60, 320, 80, TFT_BLACK);
-    tft.setCursor(10, 70);
-    tft.setTextFont(2);
-    tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.print(message);
-}
-
-// Connect using stored credentials
-void connectWiFi() {
-    String stored_ssid, stored_password;
+    // (POWER ON)IO15 must be set to HIGH before starting, otherwise the screen will not display when using battery
+    pinMode(PIN_POWER_ON, OUTPUT);
+    digitalWrite(PIN_POWER_ON, HIGH);
     
-    if (!getWiFiCredentials(stored_ssid, stored_password)) {
-        Serial.println("No WiFi credentials stored!");
-        showWiFiStatus("No WiFi credentials stored!");
-        // Hier kunnen we later code toevoegen om credentials in te voeren
-        return;
+    Serial.begin(115200);
+    Serial.println("\n=== T-Display S3 Stopwatch Starting ===");
+    
+    // Initialize display first for user feedback
+    if (!display.init()) {
+        Serial.println("FATAL: Display initialization failed!");
+        while (true) delay(1000);
     }
-
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(stored_ssid.c_str(), stored_password.c_str());
-    Serial.printf("Connecting to %s\n", stored_ssid.c_str());
-
-    tft.fillRect(0, 60, 320, 80, TFT_BLACK);
-    tft.setCursor(10, 70);
-    tft.setTextFont(2);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.printf("Connecting to %s...", stored_ssid.c_str());
-
-    uint32_t startAttempt = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - startAttempt) < WIFI_CONNECT_TIMEOUT_MS) {
-        delay(250);
-        Serial.print(".");
-        tft.print(".");
+    
+    // Initialize energy management system (test mode enabled)
+    if (!energyManager.init(false)) {
+        Serial.println("ERROR: Energy manager initialization failed!");
     }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\nWiFi connected!");
-        Serial.printf("IP address: %s\n", WiFi.localIP().toString().c_str());
+    
+    // Check if we have stored WiFi credentials
+    if (CaptivePortalManager::hasStoredCredentials()) {
+        Serial.println("Found stored WiFi credentials, attempting connection...");
+        display.showSplashScreen();
+        display.showStartupMessage("Connecting to WiFi...");
         
-        showWiFiStatus("WiFi connected!");
-        tft.setCursor(10, 100);
-        tft.print(WiFi.localIP());
+        // Try to connect with stored credentials
+        if (CaptivePortalManager::connectWithStoredCredentials()) {
+            Serial.println("WiFi connected with stored credentials!");
+            currentMode = MODE_NORMAL;
+            loadConfiguration();
+            initializeNormalOperation();
+        } else {
+            Serial.println("Failed to connect with stored credentials, starting captive portal...");
+            currentMode = MODE_SETUP;
+            setupMode();
+        }
     } else {
-        Serial.println("\nWiFi connection failed!");
-        showWiFiStatus("WiFi connection failed!");
+        Serial.println("No stored WiFi credentials found, starting captive portal...");
+        currentMode = MODE_SETUP;
+        setupMode();
+    }
+    
+    Serial.println("=== Setup Complete ===");
+}
+
+void loop() {
+    switch (currentMode) {
+        case MODE_SETUP:
+            if (captivePortal) {
+                captivePortal->loop();
+                
+                // Check if configuration is complete (device will restart automatically)
+                if (captivePortal->isConfigComplete()) {
+                    Serial.println("Configuration complete, restarting...");
+                    delay(1000);
+                    ESP.restart();
+                }
+            }
+            break;
+            
+        case MODE_NORMAL:
+            normalMode();
+            break;
     }
 }
 
-// ------------- WebSocket Logic ---------------
+void loadConfiguration() {
+    Serial.println("Loading configuration from preferences...");
+    
+    Preferences prefs;
+    prefs.begin("stopwatch", true);
+    
+    config.wsServer = prefs.getString("ws_server", "scherm.azckamp.nl");
+    config.wsPort = prefs.getUInt("ws_port", 443);
+    config.laneNumber = prefs.getUInt("lane", 9);
+    config.useSSL = (config.wsPort == 443);
+    
+    prefs.end();
+    
+    Serial.printf("Config - Server: %s:%d, Lane: %d, SSL: %s\n", 
+                  config.wsServer.c_str(), config.wsPort, config.laneNumber,
+                  config.useSSL ? "yes" : "no");
+}
 
-void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
-    switch(type) {
-        case WStype_DISCONNECTED:
-            Serial.println("WebSocket Disconnected!");
-            wsConnected = false;
-            showWiFiStatus("WebSocket Disconnected!");
+void setupMode() {
+    Serial.println("Starting captive portal setup mode...");
+    
+    // Show setup screen
+    display.showSplashScreen();
+    display.showStartupMessage("Setup Mode");
+    display.showConfigPortalInfo("T-Display-S3-Setup", "stopwatch123");
+    
+    // Create and start captive portal
+    captivePortal = new CaptivePortalManager();
+    if (!captivePortal->begin()) {
+        Serial.println("FATAL: Failed to start captive portal!");
+        display.showStartupMessage("Setup Failed!");
+        while (true) delay(1000);
+    }
+    
+    Serial.println("Captive portal started successfully");
+    Serial.println("Connect to WiFi: T-Display-S3-Setup (Password: stopwatch123)");
+}
+
+void initializeNormalOperation() {
+    Serial.println("Initializing normal stopwatch operation...");
+    
+    // Initialize button manager
+    if (!buttons.init()) {
+        Serial.println("ERROR: Button initialization failed!");
+        display.showGeneralStatus("Button init failed!", COLOR_ERROR);
+        delay(3000);
+    }
+    
+    // Setup display
+    display.clearScreen();
+    display.drawBorders();
+    display.updateLaneInfo(config.laneNumber);
+    int rssi = WiFi.RSSI();
+    display.updateWiFiStatus("Connected", true, rssi);
+    
+    // Show initial battery status using EnergyManager
+    float batteryVoltage = energyManager.getBatteryVoltage();
+    uint8_t batteryPercentage = energyManager.getBatteryPercentage();
+    display.updateBatteryDisplay(batteryVoltage, batteryPercentage);
+    
+    // Setup stopwatch callbacks
+    stopwatch.onStateChanged = onStopwatchStateChanged;
+    stopwatch.onLapAdded = onLapAdded;
+    stopwatch.onConnectionChanged = onConnectionChanged;
+    stopwatch.onTimeSync = onTimeSync;
+    stopwatch.onEventHeatChanged = onEventHeatChanged;
+    stopwatch.onSplitTimeReceived = onSplitTimeReceived;
+    stopwatch.onDisplayClear = onDisplayClear;
+    
+
+    
+    // Initialize WebSocket connection
+    display.showStartupMessage("Connecting to server...");
+    stopwatch.setServerConfig(config.wsServer, config.wsPort, "/ws", config.useSSL);
+    stopwatch.setLaneNumber(config.laneNumber);
+    
+    if (stopwatch.connect()) {
+        Serial.println("WebSocket connection initiated");
+        display.updateWebSocketStatus("Connecting...", false);
+    } else {
+        Serial.println("Failed to initiate WebSocket connection");
+        display.updateWebSocketStatus("Failed", false);
+    }
+    
+    // Clear startup message and show initial stopwatch display
+    display.clearStartupMessage();
+    display.updateStopwatchDisplay(0, false);
+    
+    systemInitialized = true;
+    Serial.println("Normal operation initialized successfully");
+}
+
+void normalMode() {
+    unsigned long now = millis();
+    
+    // Handle hardware buttons (highest priority)
+    handleButtonEvents();
+    
+    // Process WebSocket communication (high priority)
+    stopwatch.loop();
+    
+    // Update display at 10Hz (every 100ms)
+    if (now - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
+        updateDisplay();
+        lastDisplayUpdate = now;
+    }
+    
+    // Update status information periodically
+    if (now - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
+        checkConnections();
+        lastStatusUpdate = now;
+    }
+    
+    // Check for sleep timeout (only when stopwatch is stopped and sleep is enabled)
+    if (energyManager.isSleepEnabled() && 
+        stopwatch.getState() == STOPWATCH_STOPPED && 
+        energyManager.checkSleepTimeout()) {
+        Serial.println("Sleep timeout reached, entering LIGHT sleep (GPIO2 wake)...");
+        //@TODO temporarily disable light sleep for prod testing
+        //energyManager.enterLightSleep();
+    }
+    
+    // Small delay to prevent excessive CPU usage
+    delay(10);
+}
+
+void handleButtonEvents() {
+    if (!systemInitialized) return;
+    
+    ButtonEvent event = buttons.getButtonEvent();
+    
+    switch (event) {
+        case BUTTON_START_LAP_PRESSED:
+            // GPIO0 - Not used for local control (only WebSocket start)
+            energyManager.updateActivityTimer(); // Reset sleep timer on button press
+            Serial.println("GPIO0 pressed - No local action (WebSocket start only)");
             break;
-        case WStype_CONNECTED:
-            Serial.println("WebSocket Connected!");
-            wsConnected = true;
-            showWiFiStatus("WebSocket Connected!");
-            break;
-        case WStype_TEXT: {
-            Serial.printf("WebSocket received text: %s\n", payload);
             
-            StaticJsonDocument<200> doc;
-            DeserializationError error = deserializeJson(doc, payload);
-            
-            if (error) {
-                Serial.print("deserializeJson() failed: ");
-                Serial.println(error.c_str());
-                return;
-            }
-              const char* msgType = doc["type"];
-            if (strcmp(msgType, "start") == 0) {
-                serverStartTimeMs = doc["time"].as<uint64_t>();
-                if (stopwatchState == STOPPED) {
-                    processStartLap();
-                }
-            } else if (strcmp(msgType, "reset") == 0) {
-                if (stopwatchState == RUNNING) {
-                    processStop();
-                }
-                resetStopwatch();
-                Serial.println("Stopwatch reset via WebSocket");
+        case BUTTON_START_2_PRESSED:
+            // GPIO2 - Create split time when running
+            energyManager.updateActivityTimer(); // Reset sleep timer on button press
+            if (stopwatch.getState() == STOPWATCH_RUNNING) {
+                stopwatch.addLap();
+                Serial.println("Split time created via GPIO2 button");
+            } else {
+                Serial.println("GPIO2 pressed - Stopwatch not running, no split time created");
             }
             break;
+            
+        case BUTTON_STOP_PRESSED:
+            // GPIO14 - Reset functionality (when stopped)
+            energyManager.updateActivityTimer(); // Reset sleep timer on button press
+            if (stopwatch.getState() == STOPWATCH_STOPPED) {
+                stopwatch.reset();
+                Serial.println("Stopwatch reset via GPIO14 button");
+            } else {
+                Serial.println("GPIO14 pressed - Stopwatch running, no reset action");
+            }
+            break;
+            
+        case BUTTON_NONE:
+        default:
+            // No button event
+            break;
+    }
+}
+
+void updateDisplay() {
+    if (!systemInitialized) return;
+    
+    // Update main stopwatch time display
+    uint32_t elapsedTime = stopwatch.getElapsedTime();
+    bool isRunning = (stopwatch.getState() == STOPWATCH_RUNNING);
+    display.updateStopwatchDisplay(elapsedTime, isRunning);
+    
+    // Show status when not running
+    if (!isRunning && elapsedTime == 0) {
+        // Only show this when truly stopped/reset (not just paused)
+        static unsigned long lastStatusToggle = 0;
+        static bool showStatus = true;
+        
+        if (millis() - lastStatusToggle > 2000) { // Toggle every 2 seconds
+            lastStatusToggle = millis();
+            showStatus = !showStatus;
+            
+            if (showStatus) {
+                display.showStartupMessage("Ready - Waiting for start...");
+            } else {
+                display.clearStartupMessage();
+            }
+        }
+    } else {
+        display.clearStartupMessage();
+    }
+}
+
+void checkConnections() {
+    // Check WiFi connection
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi connection lost");
+        display.updateWiFiStatus("Disconnected", false);
+        // Could implement reconnection logic here
+    } else {
+        int rssi = WiFi.RSSI();
+        display.updateWiFiStatus("Connected", true, rssi);
+    }
+    
+    // Check WebSocket connection
+    if (!stopwatch.isConnected()) {
+        display.updateWebSocketStatus("Disconnected", false);
+    } else {
+        int ping = stopwatch.getPingMs();
+        display.updateWebSocketStatus("Connected", true, ping);
+    }
+    
+    // Update battery status using EnergyManager
+    float batteryVoltage = energyManager.getBatteryVoltage();
+    uint8_t batteryPercentage = energyManager.getBatteryPercentage();
+    display.updateBatteryDisplay(batteryVoltage, batteryPercentage);
+}
+
+// Callback functions
+void onStopwatchStateChanged(StopwatchState newState) {
+    Serial.printf("Stopwatch state changed to: %d\n", newState);
+    
+    switch (newState) {
+        case STOPWATCH_STOPPED:
+            Serial.println("Stopwatch stopped");
+            // Clear split display when stopped/reset
+            clearSplitDisplay();
+            break;
+        case STOPWATCH_RUNNING:
+            Serial.println("Stopwatch started");
+            break;
+        case STOPWATCH_PAUSED:
+            Serial.println("Stopwatch paused");
+            break;
+    }
+}
+
+void onLapAdded(uint8_t lapNumber, uint32_t lapTime, uint32_t totalTime) {
+    Serial.printf("Split %d added - Total time: %s\n", 
+                  lapNumber, 
+                  stopwatch.formatTime(totalTime).c_str());
+    
+    // Shift existing splits up to make room for new one
+    lastSplits[0] = lastSplits[1];
+    lastSplits[1] = lastSplits[2];
+    
+    // Add new split to the end
+    lastSplits[2] = {lapNumber, totalTime, stopwatch.formatTime(totalTime), true};
+    
+    // Update display with last 3 splits
+    for (int i = 0; i < 3; i++) {
+        if (lastSplits[i].valid) {
+            String displayText = "Split - " + String(lastSplits[i].splitNumber) + ": " + lastSplits[i].formattedTime;
+            display.updateLapTime(i + 1, displayText);
+        } else {
+            display.updateLapTime(i + 1, "");
         }
     }
 }
 
-void setupWebSocket() {
-    webSocket.beginSSL("scherm.azckamp.nl", 443);
-    webSocket.onEvent(webSocketEvent);
-    webSocket.setReconnectInterval(5000);
-    Serial.println("WebSocket setup completed");
+void onConnectionChanged(bool connected) {
+    if (connected) {
+        Serial.println("WebSocket connected successfully");
+        int ping = stopwatch.getPingMs();
+        display.updateWebSocketStatus("Connected", true, ping);
+    } else {
+        Serial.println("WebSocket disconnected");
+        display.updateWebSocketStatus("Disconnected", false);
+    }
+}
+
+void onTimeSync(bool synced) {
+    if (synced) {
+        Serial.println("Time synchronized with server");
+    } else {
+        Serial.println("Time synchronization lost");
+    }
+}
+
+void onEventHeatChanged(const String& event, const String& heat) {
+    Serial.printf("Event/Heat changed: %s / %s\n", event.c_str(), heat.c_str());
+    // Event/heat info could be shown in one of the lap areas or as a temporary message
+}
+
+void onSplitTimeReceived(uint8_t lane, const String& time) {
+    Serial.printf("Split time received for lane %d: %s\n", lane, time.c_str());
+    // Split times are now handled by the onSplit function which shows them properly
+    // This function is for receiving individual split times from other lanes
+}
+
+void onDisplayClear() {
+    Serial.println("Display clear requested");
+    display.clearLapTimes();
+    clearSplitDisplay();
+}
+
+void clearSplitDisplay() {
+    // Clear the split times tracking
+    for (int i = 0; i < 3; i++) {
+        lastSplits[i] = {0, 0, "", false};
+        display.updateLapTime(i + 1, "");
+    }
+    Serial.println("Split display cleared");
 }
