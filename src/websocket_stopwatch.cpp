@@ -21,6 +21,7 @@ WebSocketStopwatch::WebSocketStopwatch()
     , startTimeMs(0)
     , elapsedMs(0)
     , syncStartTime(0)
+    , startLocked(false)
     , lapCount(0)
     , laneNumber(9)
     , lastDisplayUpdate(0)
@@ -334,6 +335,30 @@ void WebSocketStopwatch::sendMessage(const String& message) {
     }
 }
 
+void WebSocketStopwatch::sendStart(const String& event, const String& heat) {
+    if (!wsConnected) {
+        Serial.println("WS not connected - cannot send start");
+        return;
+    }
+    // Gate multiple starts: don't allow when already running or until server reset
+    if (startLocked || currentState == STOPWATCH_RUNNING) {
+        Serial.println("Start blocked: already running or waiting for reset");
+        return;
+    }
+    StaticJsonDocument<256> doc;
+    doc["type"] = WS_MSG_START;
+    doc["event"] = event;
+    doc["heat"] = heat;
+    // Use synchronized time (ms since epoch if server_time reflects epoch)
+    doc["timestamp"] = getSynchronizedTime();
+    String message;
+    serializeJson(doc, message);
+    sendMessage(message);
+    Serial.printf("Starter sent start: event=%s heat=%s ts=%llu\n", event.c_str(), heat.c_str(), (unsigned long long)getSynchronizedTime());
+    // Lock further starts until we receive a reset from server
+    startLocked = true;
+}
+
 uint64_t WebSocketStopwatch::getServerTime() {
     // Use the synchronized time from ping/pong 
     return getSynchronizedTime();
@@ -397,7 +422,10 @@ void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, s
                 handleResetMessage(doc);
             } else if (strcmp(msgType, WS_MSG_SPLIT) == 0) {
                 handleSplitMessage(doc);
-            } else if (strcmp(msgType, WS_MSG_EVENT_HEAT) == 0) {
+            // Both 'event-heat' and 'select-event' message types are handled identically
+            // because they both update the current event and heat information from the server.
+            // If their purposes diverge in the future, separate handling can be implemented.
+            } else if (strcmp(msgType, WS_MSG_EVENT_HEAT) == 0 || strcmp(msgType, WS_MSG_SELECT_EVENT) == 0) {
                 handleEventHeatMessage(doc);
             } else if (strcmp(msgType, WS_MSG_CLEAR) == 0) {
                 handleClearMessage(doc);
@@ -421,10 +449,14 @@ void WebSocketStopwatch::handleStartMessage(JsonDocument& doc) {
     } else {
         start(); // Start without server time
     }
+    // Ensure lock is engaged when a start is processed
+    startLocked = true;
 }
 
 void WebSocketStopwatch::handleResetMessage(JsonDocument& doc) {
     handleRemoteReset();
+    // Unlock start after server reset message
+    startLocked = false;
 }
 
 void WebSocketStopwatch::handleSplitMessage(JsonDocument& doc) {

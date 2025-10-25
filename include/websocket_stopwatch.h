@@ -11,6 +11,7 @@
 #define WS_MSG_RESET "reset"
 #define WS_MSG_SPLIT "split"
 #define WS_MSG_EVENT_HEAT "event-heat"
+#define WS_MSG_SELECT_EVENT "select-event"
 #define WS_MSG_CLEAR "clear"
 
 // Stopwatch states
@@ -56,6 +57,7 @@ private:
     uint32_t startTimeMs;           // Local start time (for fallback)
     uint32_t elapsedMs;
     uint64_t syncStartTime;         // Synchronized start time from server
+    bool startLocked;               // Prevent multiple starts until server reset
     
     // Event and Heat information
     String currentEvent;
@@ -119,6 +121,9 @@ public:
     void stop();
     void reset();
     void addLap();
+    
+    // Starter control (client -> server)
+    void sendStart(const String& event, const String& heat);
     
     // State queries
     StopwatchState getState();
