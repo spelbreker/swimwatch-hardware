@@ -25,13 +25,17 @@ WebSocketStopwatch::WebSocketStopwatch()
     , lapCount(0)
     , laneNumber(9)
     , lastDisplayUpdate(0)
+    , deviceMAC("")
+    , deviceRole("lane")
+    , isRegistered(false)
     , onStateChanged(nullptr)
     , onLapAdded(nullptr)
     , onConnectionChanged(nullptr)
     , onTimeSync(nullptr)
     , onEventHeatChanged(nullptr)
     , onSplitTimeReceived(nullptr)
-    , onDisplayClear(nullptr) {
+    , onDisplayClear(nullptr)
+    , onDeviceConfigChanged(nullptr) {
     
     // Set static instance for callback
     wsStopwatchInstance = this;
@@ -66,8 +70,17 @@ void WebSocketStopwatch::setLaneNumber(uint8_t lane) {
     Serial.printf("Lane number set to: %d\n", laneNumber);
 }
 
+void WebSocketStopwatch::setDeviceRole(const String& role) {
+    deviceRole = role;
+    Serial.printf("Device role set to: %s\n", deviceRole.c_str());
+}
+
 bool WebSocketStopwatch::connect() {
     Serial.println("Connecting to WebSocket server...");
+    
+    // Retrieve device MAC address
+    deviceMAC = WiFi.macAddress();
+    Serial.printf("Device MAC address: %s\n", deviceMAC.c_str());
     
     if (useSSL) {
         webSocket.beginSSL(serverHost.c_str(), serverPort, serverPath.c_str());
@@ -86,6 +99,7 @@ bool WebSocketStopwatch::connect() {
 void WebSocketStopwatch::disconnect() {
     webSocket.disconnect();
     wsConnected = false;
+    isRegistered = false;
     Serial.println("WebSocket disconnected");
     
     if (onConnectionChanged) {
@@ -384,6 +398,7 @@ void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, s
         case WStype_CONNECTED:
             Serial.printf("WebSocket Connected to: %s\n", payload);
             wsConnected = true;
+            isRegistered = false;
             
             // Reset synchronization state for fresh measurements on new connection
             bestPingMs = -1;
@@ -429,6 +444,10 @@ void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, s
                 handleEventHeatMessage(doc);
             } else if (strcmp(msgType, WS_MSG_CLEAR) == 0) {
                 handleClearMessage(doc);
+            } else if (strcmp(msgType, WS_MSG_DEVICE_UPDATE_ROLE) == 0) {
+                handleDeviceUpdateRoleMessage(doc);
+            } else if (strcmp(msgType, WS_MSG_DEVICE_UPDATE_LANE) == 0) {
+                handleDeviceUpdateLaneMessage(doc);
             }
             break;
         }
@@ -497,6 +516,47 @@ void WebSocketStopwatch::handleClearMessage(JsonDocument& doc) {
     clearDisplay();
 }
 
+void WebSocketStopwatch::handleDeviceUpdateRoleMessage(JsonDocument& doc) {
+    if (doc.containsKey("mac") && doc.containsKey("role")) {
+        String mac = doc["mac"].as<String>();
+        String role = doc["role"].as<String>();
+        
+        // Only process if the update is for this device
+        if (mac == deviceMAC) {
+            // Validate role
+            if (role == "lane" || role == "starter") {
+                deviceRole = role;
+                Serial.printf("Device role updated to: %s\n", deviceRole.c_str());
+                
+                // Notify application of config change
+                if (onDeviceConfigChanged) {
+                    onDeviceConfigChanged(deviceRole, laneNumber);
+                }
+            } else {
+                Serial.printf("Invalid role received: %s\n", role.c_str());
+            }
+        }
+    }
+}
+
+void WebSocketStopwatch::handleDeviceUpdateLaneMessage(JsonDocument& doc) {
+    if (doc.containsKey("mac") && doc.containsKey("lane")) {
+        String mac = doc["mac"].as<String>();
+        uint8_t lane = doc["lane"].as<uint8_t>();
+        
+        // Only process if the update is for this device
+        if (mac == deviceMAC) {
+            laneNumber = lane;
+            Serial.printf("Device lane updated to: %d\n", laneNumber);
+            
+            // Notify application of config change
+            if (onDeviceConfigChanged) {
+                onDeviceConfigChanged(deviceRole, laneNumber);
+            }
+        }
+    }
+}
+
 int WebSocketStopwatch::getPingMs() {
     return pingMs;
 }
@@ -509,6 +569,36 @@ void WebSocketStopwatch::sendJsonPing() {
     String message;
     serializeJson(doc, message);
     sendMessage(message);
+}
+
+void WebSocketStopwatch::sendDeviceRegistration() {
+    if (!wsConnected || deviceMAC.isEmpty() || deviceRole.isEmpty()) {
+        Serial.println("Cannot send device registration - missing required data");
+        return;
+    }
+    
+    StaticJsonDocument<300> doc;
+    doc["type"] = WS_MSG_DEVICE_REGISTER;
+    doc["mac"] = deviceMAC;
+    doc["ip"] = WiFi.localIP().toString();
+    doc["role"] = deviceRole;
+    
+    // Only include lane number for lane devices
+    if (deviceRole == "lane") {
+        doc["lane"] = laneNumber;
+    }
+    
+    String message;
+    serializeJson(doc, message);
+    sendMessage(message);
+    
+    isRegistered = true;
+    Serial.printf("Device registration sent - Role: %s, MAC: %s, IP: %s", 
+                  deviceRole.c_str(), deviceMAC.c_str(), WiFi.localIP().toString().c_str());
+    if (deviceRole == "lane") {
+        Serial.printf(", Lane: %d", laneNumber);
+    }
+    Serial.println();
 }
 
 void WebSocketStopwatch::handlePingMessage(JsonDocument& doc) {
@@ -551,6 +641,12 @@ void WebSocketStopwatch::handlePongMessage(JsonDocument& doc) {
         
         Serial.printf("Pong received - ping: %dms, best: %dms, offset: %lldms, samples: %d\n", 
                      pingMs, bestPingMs, serverTimeOffset, pingSampleCount);
+        
+        // Send device registration after first successful time sync
+        if (pingSampleCount == 1 && !isRegistered) {
+            Serial.println("Time sync achieved - sending device registration");
+            sendDeviceRegistration();
+        }
         
         if (onTimeSync) {
             onTimeSync(timeSync);

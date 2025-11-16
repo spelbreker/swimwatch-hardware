@@ -13,6 +13,9 @@
 #define WS_MSG_EVENT_HEAT "event-heat"
 #define WS_MSG_SELECT_EVENT "select-event"
 #define WS_MSG_CLEAR "clear"
+#define WS_MSG_DEVICE_REGISTER "device_register"
+#define WS_MSG_DEVICE_UPDATE_ROLE "device_update_role"
+#define WS_MSG_DEVICE_UPDATE_LANE "device_update_lane"
 
 // Stopwatch states
 enum StopwatchState {
@@ -43,6 +46,11 @@ private:
     unsigned long lastReconnectAttempt;
     unsigned long lastPingTime;
     unsigned long lastPongTime;
+    
+    // Device registration
+    String deviceMAC;
+    String deviceRole;
+    bool isRegistered;
     int pingMs;
     int bestPingMs; // Track best (lowest) ping time for more accurate lag compensation
     uint8_t pingSampleCount; // Number of ping samples collected
@@ -93,11 +101,14 @@ private:
     void handleClearMessage(JsonDocument& doc);
     void handlePingMessage(JsonDocument& doc);
     void handlePongMessage(JsonDocument& doc);
+    void handleDeviceUpdateRoleMessage(JsonDocument& doc);
+    void handleDeviceUpdateLaneMessage(JsonDocument& doc);
     
     // Network and timing
     void sendSplitTime(uint32_t elapsedTime);
     void sendMessage(const String& message);
     void sendJsonPing(); // Send JSON-based ping message
+    void sendDeviceRegistration(); // Send device registration to server
     
     // Time synchronization
     uint64_t getServerTime();
@@ -109,6 +120,7 @@ public:
     // Configuration
     void setServerConfig(const String& host, uint16_t port, const String& path = "/ws", bool ssl = true);
     void setLaneNumber(uint8_t lane);
+    void setDeviceRole(const String& role);
     
     // Connection management
     bool connect();
@@ -155,6 +167,7 @@ public:
     void (*onEventHeatChanged)(const String& event, const String& heat);
     void (*onSplitTimeReceived)(uint8_t lane, const String& time);
     void (*onDisplayClear)();
+    void (*onDeviceConfigChanged)(const String& role, uint8_t lane);
 };
 
 #endif // WEBSOCKET_STOPWATCH_H

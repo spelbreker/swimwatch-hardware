@@ -101,6 +101,7 @@ void onTimeSync(bool synced);
 void onEventHeatChanged(const String& event, const String& heat);
 void onSplitTimeReceived(uint8_t lane, const String& time);
 void onDisplayClear();
+void onDeviceConfigChanged(const String& role, uint8_t lane);
 
 void setup() {
     // (POWER ON)IO15 must be set to HIGH before starting, otherwise the screen will not display when using battery
@@ -243,11 +244,13 @@ void initializeNormalOperation() {
     stopwatch.onEventHeatChanged = onEventHeatChanged;
     stopwatch.onSplitTimeReceived = onSplitTimeReceived;
     stopwatch.onDisplayClear = onDisplayClear;
+    stopwatch.onDeviceConfigChanged = onDeviceConfigChanged;
     
     // Initialize WebSocket connection
     display.showStartupMessage("Connecting to server...");
     stopwatch.setServerConfig(config.wsServer, config.wsPort, "/ws", config.useSSL);
     stopwatch.setLaneNumber(config.laneNumber);
+    stopwatch.setDeviceRole(config.role);
     
     if (stopwatch.connect()) {
         Serial.println("WebSocket connection initiated");
@@ -422,6 +425,28 @@ void onDisplayClear() {
     display.clearLapTimes();
     clearSplitDisplay();
     Serial.println("Display cleared");
+}
+
+void onDeviceConfigChanged(const String& role, uint8_t lane) {
+    // Update local config
+    config.role = role;
+    config.laneNumber = lane;
+    
+    // Save to preferences
+    Preferences prefs;
+    prefs.begin("stopwatch", false);
+    prefs.putString("role", role);
+    prefs.putUInt("lane", lane);
+    prefs.end();
+    
+    Serial.printf("Device config saved - Role: %s, Lane: %d\n", role.c_str(), lane);
+    
+    // Update display
+    if (role == "starter") {
+        display.updateRoleInfo(role, stopwatch.getCurrentEvent(), stopwatch.getCurrentHeat(), lane);
+    } else {
+        display.updateLaneInfo(lane);
+    }
 }
 
 void clearSplitDisplay() {
