@@ -90,7 +90,7 @@ public:
     void clearDisplay();
 
     // ── Remote control (via WebSocket) ─────────────────────────
-    void handleRemoteStart(int64_t timestampSec, int64_t timestampUsec);
+    void handleRemoteStart(uint64_t timestampMs, uint16_t timestampUs = 0);
     void handleRemoteReset();
 
     // ── Utility ────────────────────────────────────────────────

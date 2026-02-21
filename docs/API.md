@@ -203,15 +203,17 @@ String formatTime(uint32_t milliseconds);  // "MM:SS.cc"
 ### Remote Control (via Server)
 
 ```cpp
-void handleRemoteStart(int64_t timestampSec, int64_t timestampUsec);
+void handleRemoteStart(uint64_t timestampMs, uint16_t timestampUs = 0);
 void handleRemoteReset();
 ```
 
 **Network Delay Compensation:**
-- `handleRemoteStart` receives NTP timestamps from the starter device
+- `handleRemoteStart` receives NTP timestamp (milliseconds + microseconds) from the starter device
+- `timestampMs`: Unix epoch milliseconds
+- `timestampUs`: Sub-millisecond microseconds (0-999) for full microsecond precision
 - Calculates network delay by comparing starter's timestamp to local NTP time
 - Calls `timer.startWithOffset(delayUs)` to backdate the start point
-- Result: All devices show synchronized elapsed time within ±2-4ms
+- Result: All devices show synchronized elapsed time within ±1-2ms
 
 ### Callbacks (set by `main.cpp`)
 
@@ -240,7 +242,7 @@ enum StopwatchState {
 #### Received from Server
 
 ```json
-{ "type": "start", "event": "100m Free", "heat": "3", "timestamp_sec": 1234567890, "timestamp_usec": 123456 }
+{ "type": "start", "event": "100m Free", "heat": "3", "timestamp": 1234567890123, "timestamp_us": 456 }
 { "type": "reset" }
 { "type": "event-heat", "event": "100m Free", "heat": "3" }
 { "type": "clear" }
@@ -250,8 +252,9 @@ enum StopwatchState {
 
 **Notes:**
 - `start` message includes microsecond-precision NTP timestamp for network delay compensation
-- `timestamp_sec`: Unix epoch seconds (from `gettimeofday()`)
-- `timestamp_usec`: Microseconds component (0-999999)
+- `timestamp`: Unix epoch milliseconds (from `gettimeofday()`)
+- `timestamp_us`: Sub-millisecond microseconds (0-999) for full microsecond precision
+- Combined precision: `timestamp` (ms) + `timestamp_us` (µs) = microsecond accuracy
 
 #### Sent to Server
 

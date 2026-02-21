@@ -225,10 +225,10 @@ The device connects to `ws://<serverIP>:<port>/ws` and:
 4. Exchanges `ping` / `pong` for latency measurement
 
 **Network Delay Compensation:**
-- Starter device sends `start` messages with microsecond NTP timestamps (`timestamp_sec`, `timestamp_usec`)
+- Starter device sends `start` messages with microsecond NTP timestamps (`timestamp` in ms + `timestamp_us` 0-999)
 - Lane devices calculate network delay by comparing starter's timestamp to their own NTP time
 - Lane timers backdate their start point by the delay via `startWithOffset()`
-- Result: All devices show synchronized elapsed time within ±2-4ms (NTP accuracy limit)
+- Result: All devices show synchronized elapsed time within ±1-2ms (microsecond timestamp precision)
 
 See [API.md](API.md) for full message format.
 

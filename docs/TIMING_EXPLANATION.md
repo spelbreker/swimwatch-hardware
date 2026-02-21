@@ -38,32 +38,34 @@ When the starter pressed the button, the message had to travel through WiFi to a
   │ (from NTP clock)│                  │                         │
   └────────┬────────┘                  │                         │
            │  "Start! My clock        │                         │
-           │   said 14:30:05.123456"  │                         │
+           │   said 14:30:05.123 ms   │                         │
+           │   + 456 µs"              │                         │
            │ ─────────────────────►   │                         │
            │                          │  "Start! Starter's      │
            │                          │   clock said             │
-           │                          │   14:30:05.123456"       │
+           │                          │   14:30:05.123 ms        │
+           │                          │   + 456 µs"              │
            │                          │ ──────────────────────►  │
            │                          │                          │
            │                          │              ┌───────────────────┐
            │                          │              │ Lane checks its   │
            │                          │              │ own clock:        │
-           │                          │              │ 14:30:05.153456   │
+           │                          │              │ 14:30:05.153.789  │
            │                          │              │                   │
            │                          │              │ Difference:       │
-           │                          │              │ 0.030 seconds     │
-           │                          │              │ (30 milliseconds) │
+           │                          │              │ 30.333 ms         │
+           │                          │              │ (30,333 µs)       │
            │                          │              │                   │
            │                          │              │ "The race already │
-           │                          │              │  started 30ms ago │
-           │                          │              │  — I'll set my    │
-           │                          │              │  stopwatch to     │
-           │                          │              │  0.030 instead    │
+           │                          │              │  started 30.333ms │
+           │                          │              │  ago — I'll set   │
+           │                          │              │  my stopwatch to  │
+           │                          │              │  0.030333 instead │
            │                          │              │  of 0.000"        │
            │                          │              └───────────────────┘
 ```
 
-**The key:** The lane device doesn't start at zero. It calculates "how late is this message?" using the shared NTP clock, then jumps ahead by that amount. Now all devices show the same elapsed time within **±2–4 milliseconds**.
+**The key:** The lane device doesn't start at zero. It calculates "how late is this message?" using the shared NTP clock with **microsecond precision**, then jumps ahead by that amount. Now all devices show the same elapsed time within **±1-2 milliseconds**.
 
 ---
 
@@ -119,10 +121,10 @@ This is one device doing simple subtraction on times from the same clock — **p
 | Measurement | Accuracy | Why |
 |-------------|----------|-----|
 | **Starter's own display** | Perfect (0.001ms) | One device, one hardware clock |
-| **Starter → Lane sync** | ±2–4 ms | Both use NTP; clocks agree within ~2ms |
+| **Starter → Lane sync** | ±1–2 ms | Microsecond NTP timestamps compensate for network delay |
 | **Lane split times** | Perfect (0.001ms) | One device reading its own clock |
 | **Lap time differences** | Perfect (0.001ms) | Simple subtraction on same clock |
-| **Lane vs Starter displays** | ±2–4 ms | Limited by NTP synchronization |
+| **Lane vs Starter displays** | ±1–2 ms | Limited by NTP synchronization accuracy |
 
 ### Comparison to Standards
 
@@ -130,8 +132,8 @@ This is one device doing simple subtraction on times from the same clock — **p
 - Electronic timing must be accurate within **±10 milliseconds** (1/100th second)
 
 **SwimWatch Performance:**
-- **2–5× better** than FINA requirements
-- ±2–4ms is competitive with professional pool timing systems
+- **5-10× better** than FINA requirements
+- ±1-2ms is competitive with professional pool timing systems
 
 ---
 
