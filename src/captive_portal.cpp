@@ -36,12 +36,12 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
             
             <div class="form-group">
                 <label for="server">WebSocket Server:</label>
-                <input type="text" id="server" name="server" value="scherm.azckamp.nl" placeholder="Server address">
+                <input type="text" id="server" name="server" value="192.168.1.10" placeholder="Server address">
             </div>
             
             <div class="form-group">
                 <label for="port">Server Port:</label>
-                <input type="number" id="port" name="port" value="443" placeholder="443">
+                <input type="number" id="port" name="port" value="80" placeholder="80">
             </div>
             
             <div class="form-group">

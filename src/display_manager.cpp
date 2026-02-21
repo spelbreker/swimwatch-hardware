@@ -410,8 +410,10 @@ void DisplayManager::updateLapTime(uint8_t lapNumber, const String& time) {
         }
         
         *lastLap = time;
+        lapAreaDirty = true;  // Mark as dirty so changes are properly tracked
+    } else {
+        lapAreaDirty = false;  // Reset dirty flag if no changes needed
     }
-    lapAreaDirty = false;
 }
 
 void DisplayManager::clearLapTimes() {
