@@ -1,47 +1,62 @@
+/**
+ * @file button_manager.h
+ * @brief Hardware button handler with ISR + debounce for SwimWatch
+ *
+ * Buttons:
+ *   GPIO0  (BUTTON1): Start/Stop toggle — onboard, active LOW
+ *   GPIO14 (BUTTON2): Reset (only when stopped) — onboard, active LOW
+ *   GPIO2  (external): Split trigger — active LOW, external pullup
+ *
+ * Each button uses a hardware interrupt with software debounce
+ * (BUTTON_DEBOUNCE_MS from config.h, default 200ms).
+ */
 #ifndef BUTTON_MANAGER_H
 #define BUTTON_MANAGER_H
 
 #include <Arduino.h>
+#include "config.h"
 
-// Hardware Pin Definitions for LilyGO T-Display S3
-#define BUTTON_LAP_PIN 2   // GPIO2 - Lap button (active HIGH, external pulldown required)
-
-// Button timing
-#define DEBOUNCE_TIME_MS 300  // Extended debounce for GPIO2 split button
-
-// Button states
+/** Button events returned by getButtonEvent() */
 enum ButtonEvent {
     BUTTON_NONE,
-    BUTTON_LAP_PRESSED
+    BUTTON_START_STOP,   ///< GPIO0 pressed  — toggle start/stop
+    BUTTON_RESET,        ///< GPIO14 pressed — reset (only when stopped)
+    BUTTON_LAP_PRESSED   ///< GPIO2 pressed  — split / starter send
 };
 
+/**
+ * @class ButtonManager
+ * @brief ISR-driven button handler with software debounce
+ */
 class ButtonManager {
-private:
-    // Interrupt flags
-    volatile bool lapInterrupt;
-    
-    // Debounce timing
-    volatile uint32_t lastLapInterrupt;
-    
-    // Static interrupt handlers (required for attachInterrupt)
-    static ButtonManager* instance;
-    static void IRAM_ATTR handleLapInterrupt();
-    
 public:
     ButtonManager();
-    
-    // Initialization
+
+    /** Configure GPIOs and attach interrupts. Call once in setup(). */
     bool init();
-    
-    // Event processing
+
+    /** Return the next pending event (one per call, priority order). */
     ButtonEvent getButtonEvent();
+
+    /** Discard all pending events. */
     void clearEvents();
-    
-    // Button state reading (for polling if needed)
-    bool isLapPressed();
-    
-    // Interrupt handlers (called by static handlers)
-    void handleLapISR();
+
+private:
+    // ISR flags (set in ISR, cleared in getButtonEvent)
+    volatile bool _startStopFlag;
+    volatile bool _resetFlag;
+    volatile bool _splitFlag;
+
+    // Debounce timestamps
+    volatile uint32_t _lastStartStop;
+    volatile uint32_t _lastReset;
+    volatile uint32_t _lastSplit;
+
+    // Static instance + ISR wrappers (attachInterrupt requires static)
+    static ButtonManager* _instance;
+    static void IRAM_ATTR _isrStartStop();
+    static void IRAM_ATTR _isrReset();
+    static void IRAM_ATTR _isrSplit();
 };
 
 #endif // BUTTON_MANAGER_H

@@ -9,37 +9,14 @@ void DisplayManager::sendTFTCommand(uint8_t cmd) {
 }
 /**
  * @file display_manager.cpp
- * @brief Display Manager for LilyGO T-Display S3 Swimming Stopwatch
- * 
- * This file implements the display management system for a swimming stopwatch
- * using the LilyGO T-Display S3 with ST7789V 1.9" TFT display.
- * 
- * Display Layout (320x170 pixels, landscape):
- * ┌─────────────────────────────────────────┬─────────────────────┐
- * │                                         │     WiFi Status     │
- * │          Stopwatch Time Display         │    (Strength Bars)  │
- * │             (240x80 area)               ├─────────────────────┤
- * │                                         │   WebSocket Status  │
- * ├─────────────────────────────────────────┤      (WS + Ping)    │
- * │           Split Times Area              ├─────────────────────┤
- * │   Split - 1: xx:xx:xx (if available)    │    Lane Number      │
- * │   Split - 2: xx:xx:xx (if available)    │      Lane X         │
- * │   Split - 3: xx:xx:xx (if available)    ├─────────────────────┤
- * │             (240x90 area)               │   Battery Status    │
- * │                                         │    Battery XX%      │
- * └─────────────────────────────────────────┴─────────────────────┘
- * 
- * Features:
- * - Main area (0-240px): Stopwatch time and split times
- * - Sidebar (240-320px): Status information with swimming pool background
- * - WiFi strength visualization with colored bars
- * - Real-time WebSocket connection monitoring
- * - Lane number display
- * - Battery percentage monitoring
- * - Clean, swimming-themed interface
- * 
- * @author Swimming Timer System
- * @date 2025
+ * @brief TFT display implementation for SwimWatch
+ *
+ * Layout: 320x170 landscape, two panels.
+ * - Main area (0–240px): Stopwatch time + rolling split times
+ * - Sidebar (240–320px): WiFi bars, WS status, lane/role, NTP clock
+ *
+ * Uses dirty-region tracking — only redraws changed areas.
+ * Swimming pool blue (#0092b8) sidebar theme.
  */
 
 #include "display_manager.h"
@@ -53,6 +30,7 @@ DisplayManager::DisplayManager()
     , wifiAreaDirty(true) 
     , websocketAreaDirty(true)
     , laneAreaDirty(true)
+    , ntpClockAreaDirty(true)
     , batteryAreaDirty(true)
     , lapAreaDirty(true)
     , timeFont(6)      // Large font for stopwatch time
@@ -87,7 +65,7 @@ void DisplayManager::setRotation(uint8_t rotation) {
 void DisplayManager::setBrightness(uint8_t brightness) {
     // Note: TFT_eSPI doesn't have built-in brightness control
     // This would need to be implemented via PWM on the backlight pin
-    // For LilyGO T-Display S3, backlight is on GPIO4
+    // For LilyGO T-Display S3, backlight is on GPIO38
     // TODO: Implement PWM brightness control
 }
 
@@ -103,7 +81,8 @@ void DisplayManager::clearScreen() {
     lastWiFiStatus = "";
     lastWebSocketStatus = "";
     lastLaneInfo = "";
-    lastBatteryString = "";
+    lastNtpClock = "";
+    lastBatteryStr = "";
     lastLap1 = "";
     lastLap2 = "";
     lastLap3 = "";
@@ -115,6 +94,7 @@ void DisplayManager::clearScreen() {
     wifiAreaDirty = true;
     websocketAreaDirty = true;
     laneAreaDirty = true;
+    ntpClockAreaDirty = true;
     batteryAreaDirty = true;
     lapAreaDirty = true;
 }
@@ -217,13 +197,14 @@ void DisplayManager::forceRefresh() {
     wifiAreaDirty = true;
     websocketAreaDirty = true;
     laneAreaDirty = true;
+    ntpClockAreaDirty = true;
     batteryAreaDirty = true;
     lapAreaDirty = true;
 }
 
 bool DisplayManager::needsUpdate() {
     return stopwatchAreaDirty || wifiAreaDirty || websocketAreaDirty || 
-           laneAreaDirty || batteryAreaDirty || lapAreaDirty;
+           laneAreaDirty || ntpClockAreaDirty || batteryAreaDirty || lapAreaDirty;
 }
 
 // ===============================
@@ -542,23 +523,39 @@ void DisplayManager::updateRoleInfo(const String& role, const String& event, con
     }
 }
 
-void DisplayManager::updateBatteryDisplay(float voltage, uint8_t percentage) {
-    String batteryText = "Battery\n" + String(percentage) + "%";
-    
-    if (batteryText != lastBatteryString || batteryAreaDirty) {
-        // Clear with sidebar background
-        tft.fillRect(STATUS_AREA_X, AREA_BATTERY_STATUS_Y, STATUS_AREA_WIDTH, AREA_BATTERY_STATUS_HEIGHT, COLOR_SIDEBAR_BG);
+void DisplayManager::updateNtpClock(const String& timeString, bool isSynced) {
+    if (timeString != lastNtpClock || ntpClockAreaDirty) {
+        tft.fillRect(STATUS_AREA_X, AREA_NTP_CLOCK_Y, STATUS_AREA_WIDTH, AREA_NTP_CLOCK_HEIGHT, COLOR_SIDEBAR_BG);
         
-        tft.setTextFont(2);  // Use larger font for better visibility
-        uint16_t color = (percentage > 20) ? TFT_WHITE : COLOR_ERROR;
+        tft.setTextFont(1);
+        tft.setTextColor(isSynced ? TFT_WHITE : COLOR_WARNING, COLOR_SIDEBAR_BG);
+        tft.setTextDatum(MC_DATUM);
+        
+        int centerX = STATUS_AREA_X + (STATUS_AREA_WIDTH / 2);
+        // Compact layout: "NTP" label at top, time below — fits 23px area
+        tft.drawString("NTP", centerX, AREA_NTP_CLOCK_Y + 5);
+        tft.drawString(timeString, centerX, AREA_NTP_CLOCK_Y + 15);
+        
+        lastNtpClock = timeString;
+        ntpClockAreaDirty = false;
+    }
+}
+
+void DisplayManager::updateBatteryDisplay(uint8_t percentage) {
+    String battStr = String(percentage) + "%";
+    if (battStr != lastBatteryStr || batteryAreaDirty) {
+        tft.fillRect(STATUS_AREA_X, AREA_BATTERY_Y, STATUS_AREA_WIDTH, AREA_BATTERY_HEIGHT, COLOR_SIDEBAR_BG);
+        
+        tft.setTextFont(1);
+        uint16_t color = (percentage <= 20) ? TFT_RED : TFT_WHITE;
         tft.setTextColor(color, COLOR_SIDEBAR_BG);
         tft.setTextDatum(MC_DATUM);
         
         int centerX = STATUS_AREA_X + (STATUS_AREA_WIDTH / 2);
-        int centerY = AREA_BATTERY_STATUS_Y + (AREA_BATTERY_STATUS_HEIGHT / 2);
-        tft.drawString(batteryText, centerX, centerY);
+        tft.drawString("Bat", centerX, AREA_BATTERY_Y + 5);
+        tft.drawString(battStr, centerX, AREA_BATTERY_Y + 15);
         
-        lastBatteryString = batteryText;
+        lastBatteryStr = battStr;
         batteryAreaDirty = false;
     }
 }
@@ -570,10 +567,12 @@ void DisplayManager::clearStatusAreas() {
     lastWiFiStatus = "";
     lastWebSocketStatus = "";
     lastLaneInfo = "";
-    lastBatteryString = "";
+    lastNtpClock = "";
+    lastBatteryStr = "";
     wifiAreaDirty = true;
     websocketAreaDirty = true;
     laneAreaDirty = true;
+    ntpClockAreaDirty = true;
     batteryAreaDirty = true;
 }
 

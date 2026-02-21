@@ -1,34 +1,18 @@
-
-
+/**
+ * @file display_manager.h
+ * @brief TFT display manager for SwimWatch — LilyGO T-Display S3
+ *
+ * Two-panel layout on 320x170 ST7789V:
+ * - Left (240px): Stopwatch time + split times (last 3, rolling)
+ * - Right (80px): WiFi / WebSocket / Lane / NTP clock (swimming pool theme)
+ *
+ * Updates use dirty-region tracking to minimize flicker.
+ * Refresh rate: 50ms (20fps) driven by main loop.
+ */
 #ifndef DISPLAY_MANAGER_H
 #define DISPLAY_MANAGER_H
 
-/**
- * @file display_manager.h
- * @brief Display Manager for LilyGO T-Display S3 Swimming Stopwatch
- * 
- * Provides a clean, two-panel interface for swimming competition timing:
- * - Left panel: Stopwatch time and split times (240px wide)
- * - Right panel: Status information with swimming pool theme (80px wide)
- * 
- * Features:
- * - Efficient dirty-region updates to minimize flicker
- * - WiFi signal strength visualization with colored bars
- * - Real-time WebSocket connection monitoring
- * - Battery status with low-power warnings
- * - Clean split time display (last 3 splits, rolling)
- * - Swimming pool themed color scheme
- * 
- * @author Swimming Timer System
- * @date 2025
- */
-
 #include <stdint.h>
-#include <TFT_eSPI.h>
-#include <SPI.h>
-
-#include <stdint.h>
-
 #include <TFT_eSPI.h>
 #include <SPI.h>
 
@@ -92,39 +76,29 @@
 #define AREA_WEBSOCKET_STATUS_HEIGHT 40
 #define AREA_LANE_INFO_Y 80
 #define AREA_LANE_INFO_HEIGHT 45
-#define AREA_BATTERY_STATUS_Y 125
-#define AREA_BATTERY_STATUS_HEIGHT 45
+#define AREA_BATTERY_Y 125
+#define AREA_BATTERY_HEIGHT 22
+#define AREA_NTP_CLOCK_Y 147
+#define AREA_NTP_CLOCK_HEIGHT 23
 
 /**
  * @class DisplayManager
- * @brief Manages the TFT display for the swimming stopwatch application
- * 
- * This class provides a comprehensive display management system for the
- * LilyGO T-Display S3 swimming stopwatch. It implements a two-panel layout
- * with efficient dirty-region updates and swimming-themed visual design.
- * 
- * Layout Structure:
- * ┌─────────────────────────┬──────────────┐
- * │    Stopwatch Display    │ WiFi Status  │
- * │      (240x80px)         │   (80x40px)  │
- * ├─────────────────────────┼──────────────┤
- * │    Split Times Area     │ WebSocket    │
- * │   Split 1: xx:xx:xx     │   (80x40px)  │
- * │   Split 2: xx:xx:xx     ├──────────────┤
- * │   Split 3: xx:xx:xx     │ Lane Number  │
- * │      (240x90px)         │   (80x45px)  │
- * │                         ├──────────────┤
- * │                         │ Battery      │
- * │                         │   (80x45px)  │
- * └─────────────────────────┴──────────────┘
- * 
- * Key Features:
- * - Dirty-region tracking for efficient updates
- * - Swimming pool themed color scheme  
- * - WiFi signal strength visualization
- * - Real-time connection status monitoring
- * - Clean split time management (rolling display)
- * - Battery monitoring with low-power alerts
+ * @brief Manages the TFT display for SwimWatch
+ *
+ * Layout (320x170, landscape):
+ * ┌──────────────────────────┬──────────────┐
+ * │   Stopwatch Display      │ WiFi Status  │
+ * │     MM:SS.d / MM:SS.cc   │  (bars+RSSI) │
+ * ├──────────────────────────┼──────────────┤
+ * │   Split Times            │ WebSocket    │
+ * │   Split 1: MM:SS.cc     │  (WS+ping)   │
+ * │   Split 2: MM:SS.cc     ├──────────────┤
+ * │   Split 3: MM:SS.cc     │ Lane / Role  │
+ * │                          ├──────────────┤
+ * │                          │ Battery %    │
+ * │                          ├──────────────┤
+ * │                          │ NTP Clock    │
+ * └──────────────────────────┴──────────────┘
  */
 class DisplayManager {
 private:
@@ -139,7 +113,8 @@ private:
     String lastWiFiStatus;
     String lastWebSocketStatus;
     String lastLaneInfo;
-    String lastBatteryString;
+    String lastNtpClock;
+    String lastBatteryStr;
     String lastLap1;
     String lastLap2;
     String lastLap3;
@@ -151,6 +126,7 @@ private:
     bool wifiAreaDirty;
     bool websocketAreaDirty;
     bool laneAreaDirty;
+    bool ntpClockAreaDirty;
     bool batteryAreaDirty;
     bool lapAreaDirty;
     
@@ -223,7 +199,8 @@ public:
     void updateWebSocketStatus(const String& status, bool isConnected = false, int pingMs = -1);
     void updateLaneInfo(uint8_t laneNumber);
     void updateRoleInfo(const String& role, const String& event, const String& heat, uint8_t laneNumber);
-    void updateBatteryDisplay(float voltage, uint8_t percentage);
+    void updateNtpClock(const String& timeString, bool isSynced = true);
+    void updateBatteryDisplay(uint8_t percentage);
     
     // ===================================
     // Layout and Utility Functions

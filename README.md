@@ -1,390 +1,181 @@
-# T-Display S3 Stopwatch System
+# SwimWatch
 
-A comprehensive stopwatch system for the LilyGO T-Display S3 (ESP32-S3) with Wi-Fi connectivity, WebSocket integration, and modular architecture.
+High-precision swim meet split timer with remote competition support, built for the LilyGO T-Display S3.
 
-## 🎯 Features
+## Features
 
-- **Remote-Controlled Stopwatch**: Start/reset via WebSocket commands
-- **Split Timer**: Record multiple split times during operation
-- **Wi-Fi Connectivity**: Auto-connect with configuration portal fallback
-- **Real-time Synchronization**: WebSocket time sync with lag compensation
-- **Modular Design**: Clean, maintainable code architecture
-- **Visual Status Display**: Real-time WiFi, WebSocket, lane, and battery status
+- **Precision timing**: `esp_timer_get_time()` — 1µs resolution, hardware counter, NTP-independent
+- **NTP wall-clock**: `time()` synced every 60s for absolute race timestamps
+- **Remote races**: WebSocket protocol for start/split/stop across multiple lanes
+- **Configurable**: WiFi + server + NTP via captive portal (no code changes needed)
+- **3-button control**: Start/Stop (GPIO0), Reset (GPIO14), Split (GPIO2)
 
-## 🏗️ System Architecture
+## Hardware
 
-```mermaid
-graph TB
-    subgraph "Hardware"
-        A[ESP32-S3] 
-        B[ST7789V Display<br/>320x170px]
-        C[GPIO0 Button]
-        D[GPIO14 Button]
-        E[GPIO2 Button]
-        F[ADC Battery]
-    end
-    
-    subgraph "Software Modules"
-        G[Main Controller]
-        H[Display Manager]
-        I[Button Manager]
-        J[Connectivity Manager]
-        K[WebSocket Stopwatch]
-    end
-    
-    subgraph "Network"
-        L[WiFi Network]
-        M[WebSocket Server]
-    end
-    
-    A --> B
-    A --> C
-    A --> D
-    A --> E
-    A --> F
-    
-    G --> H
-    G --> I
-    G --> J
-    G --> K
-    
-    J --> L
-    K --> M
-    
-    H --> B
-    I --> C
-    I --> D
-    I --> E
-```
+| Component | Spec |
+|-----------|------|
+| MCU | ESP32-S3R8 Dual-core LX7, 16MB Flash, 8MB PSRAM |
+| Display | 1.9" 170×320 ST7789V IPS LCD, 8-bit parallel |
+| Power | 3.3V working supply |
+| Board | LilyGO T-Display S3 |
 
-## 🔧 Hardware Setup
-
-### LilyGO T-Display S3 Specifications
-- **MCU**: ESP32-S3R8 Dual-core LX7 microprocessor
-- **Display**: 1.9" ST7789V IPS LCD (170x320 pixels)
-- **Flash**: 16MB, **PSRAM**: 8MB
-- **Connectivity**: Wi-Fi 802.11 b/g/n, BLE 5.0 + BT mesh
-- **Power**: 3.3V operating voltage
-
-### Button Configuration
-```
-GPIO0  (BUTTON1): Start/Lap - Internal pullup, active LOW
-GPIO14 (BUTTON2): Stop/Reset - Internal pullup, active LOW  
-GPIO2  (BUTTON3): Split Timer - External pulldown REQUIRED, active HIGH
-```
-
-⚠️ **IMPORTANT for GPIO2**: Connect a 1kΩ resistor between GPIO2 and GND (external pulldown required)
-
-### Pin Assignment
-```cpp
-// Display pins (handled by TFT_eSPI)
-#define TFT_MOSI     19
-#define TFT_SCLK     18
-#define TFT_CS       5
-#define TFT_DC       16
-#define TFT_BL       4
-
-// Button pins
-#define BUTTON1_PIN  0   // Start/Lap
-#define BUTTON2_PIN  14  // Stop/Reset
-#define BUTTON3_PIN  2   // Split (external pulldown required)
-
-// Other pins
-#define I2C_SDA      21
-#define I2C_SCL      22
-#define ADC_IN       34
-```
-
-## 📱 Display Layout
-
-The display is divided into main and status areas:
+### Buttons
 
 ```
-┌─────────────────────────────────┬─────────────────┐
-│                                 │   WiFi Status   │
-│       Main Stopwatch            │   🟢 Connected  │
-│        02:03:45                 │                 │
-│                                 ├─────────────────┤
-│                                 │  WebSocket      │
-├─────────────────────────────────┤  🟢 Connected   │
-│ Lap 1: 00:45:23                │                 │
-├─────────────────────────────────┼─────────────────┤
-│ Lap 2: 01:32:11                │                 │
-├─────────────────────────────────┤      Lane       │
-│ Lap 3: 02:03:45                │        9        │
-└─────────────────────────────────┼─────────────────┤
-                                  │    Battery      │
-                                  │      75%        │
-                                  └─────────────────┘
+GPIO0  (BUTTON1) — Start/Stop toggle    — onboard, active LOW
+GPIO14 (BUTTON2) — Reset (when stopped) — onboard, active LOW
+GPIO2  (external) — Split trigger        — active LOW, internal pull-up
 ```
 
-### Area Specifications
-- **Main Area**: 240x170px (Stopwatch + 3 Lap times)
-- **Status Area**: 80x170px (WiFi, WebSocket, Lane, Battery)
-- **Time Format**: 
-  - Running: `mm:ss:m` (1 digit milliseconds)
-  - Stopped: `mm:ss:mm` (2 digit milliseconds)
+### Pin Reference
 
-## 🚀 Quick Start
+Display pins are managed by TFT_eSPI via `User_Setup.h`:
+TFT_MOSI=19, TFT_SCLK=18, TFT_CS=5, TFT_DC=16, TFT_BL=4.
+GPIO15 must be HIGH for battery-powered display operation.
 
-### 1. Initial Setup
-1. Flash the firmware to your T-Display S3
-2. On first boot, device creates WiFi hotspot: `T-Display-S3-Config`
-3. Connect to hotspot with password: `stopwatch123`
-4. Navigate to `http://192.168.4.1` for configuration
+## Architecture
 
-### 2. Configuration
-Configure the following settings:
-- **WiFi Network**: Your local WiFi credentials
-- **WebSocket Server**: Server address (default: `scherm.azckamp.nl`)
-- **WebSocket Port**: Port number (default: `443` for SSL)
-- **Lane Number**: Lane identifier (default: `9`)
+```
+main.cpp                    — App entry, mode switching, button loop
+├── StopwatchTimer          — Elapsed timing (esp_timer_get_time(), 1µs)
+├── NTPManager              — Time sync via SNTP (60s interval, smooth mode)
+├── WebSocketStopwatch      — Remote competition protocol (start/split/stop)
+├── DisplayManager          — TFT display (50ms refresh, dirty-region tracking)
+├── ButtonManager           — Hardware ISR + debounce for GPIO0/GPIO14/GPIO2
+└── CaptivePortalManager    — WiFi + NTP server configuration via web form
+```
 
-### 3. Operation Modes
+### Timing Strategy
 
-#### Standalone Mode
-- **Start**: Press GPIO0 or GPIO2
-- **Lap**: Press GPIO0 while running
-- **Stop**: Press GPIO14
-- **Reset**: Press GPIO14 when stopped
+- **Elapsed**: `esp_timer_get_time()` — 1µs hardware counter, NTP-independent, ~±20ppm drift
+- **Wall-clock**: `time()` / `getLocalTime()` — NTP-synced RTC for absolute timestamps
+- **NTP**: Same server as WebSocket (default `192.168.1.10`), 60s sync interval, SNTP smooth mode
+- **Never** `millis()` for precision timing — only for debounce/scheduling
 
-#### Remote Mode (WebSocket)
-- **Start**: Via WebSocket command only
-- **Split**: Press GPIO2 to create split times
-- **Reset**: Via WebSocket command or GPIO14
+## Display Layout
 
-## 🔌 WebSocket Protocol
+```
+┌──────────────────────────┬──────────────┐
+│   Stopwatch Display      │ WiFi Status  │
+│     MM:SS.d (running)    │  bars + RSSI │
+│     MM:SS.cc (stopped)   ├──────────────┤
+├──────────────────────────┤ WebSocket    │
+│   Split 1: MM:SS.cc     │  WS + ping   │
+│   Split 2: MM:SS.cc     ├──────────────┤
+│   Split 3: MM:SS.cc     │ Lane / Role  │
+│                          ├──────────────┤
+│                          │ NTP Clock    │
+└──────────────────────────┴──────────────┘
+```
 
-### Message Format
-All messages use JSON format:
+- **Main area** (240×170): Stopwatch time + last 3 splits (rolling)
+- **Sidebar** (80×170): WiFi, WebSocket, Lane/Role, NTP clock
+- **20fps** refresh, dirty-region tracking for flicker-free updates
 
-#### Received Messages
+## Quick Start
+
+### 1. First Boot — Captive Portal
+1. Flash firmware to T-Display S3
+2. Device creates AP: **SwimWatch-Setup** (password: `swimwatch123`)
+3. Connect and go to `http://192.168.4.1`
+4. Enter WiFi credentials, server IP (default: `192.168.1.10:80`), lane number
+
+### 2. Normal Operation
+After WiFi connects:
+1. NTP syncs (5s timeout)
+2. WebSocket connects to server
+3. Ready — waiting for start command or GPIO0 press
+
+### Operation
+
+| Button | Action |
+|--------|--------|
+| GPIO0 (BUTTON1) | Toggle start/stop |
+| GPIO14 (BUTTON2) | Reset (only when stopped) |
+| GPIO2 (external) | Record split (lane) or send start (starter) |
+
+## WebSocket Protocol
+
+Server default: `ws://192.168.1.10:80/ws`
+
+### Received from server
 ```json
 {"type": "start", "timestamp": 1234567890}
 {"type": "reset"}
-{"type": "time_sync", "server_time": 1234567890}
+{"type": "event-heat", "event": "1", "heat": "2"}
+{"type": "clear"}
+{"type": "device_update_role", "mac": "...", "role": "starter"}
+{"type": "device_update_lane", "mac": "...", "lane": 3}
 ```
 
-#### Sent Messages
+### Sent to server
 ```json
-{
-  "type": "split",
-  "lane": "9",
-  "time-ms": 1234567890,
-  "time": "MM:SS:CC"
-}
+{"type": "split", "lane": 3, "elapsed_ms": 34567, "timestamp": 1234567890}
+{"type": "start", "event": "1", "heat": "1", "timestamp": 1234567890}
+{"type": "ping", "time": 12345}
+{"type": "device_register", "mac": "...", "ip": "...", "role": "lane", "lane": 3}
 ```
 
-### Connection Flow
-```mermaid
-sequenceDiagram
-    participant D as Device
-    participant S as Server
-    
-    D->>S: WebSocket Connect
-    S->>D: Connection Established
-    
-    loop Time Sync
-        D->>S: Ping
-        S->>D: Pong
-        Note over D: Calculate lag compensation
-    end
-    
-    S->>D: Start Command
-    Note over D: Begin timing
-    
-    loop Split Times
-        Note over D: User presses GPIO2
-        D->>S: Split time with lag compensation
-    end
-    
-    S->>D: Reset Command
-    Note over D: Reset timer
-```
+## Project Structure
 
-## 📚 Software Architecture
-
-### Module Overview
-```mermaid
-classDiagram
-    class Main {
-        +setup()
-        +loop()
-        +updateDisplay()
-        +handleButtons()
-    }
-    
-    class DisplayManager {
-        +init()
-        +updateStopwatchDisplay()
-        +updateLapTime()
-        +updateWiFiStatus()
-        +updateWebSocketStatus()
-    }
-    
-    class ButtonManager {
-        +init()
-        +getButtonEvent()
-        +isButtonPressed()
-        -handleInterrupt()
-    }
-    
-    class ConnectivityManager {
-        +initWiFi()
-        +saveConfig()
-        +loadConfig()
-    }
-    
-    class WebSocketStopwatch {
-        +init()
-        +start()
-        +stop()
-        +reset()
-        +addSplit()
-        +handleMessage()
-    }
-    
-    Main --> DisplayManager
-    Main --> ButtonManager
-    Main --> ConnectivityManager
-    Main --> WebSocketStopwatch
-```
-
-### Key Components
-
-#### 1. ConnectivityManager
-- WiFi connection management  
-- Configuration storage (Preferences)
-- Captive portal setup for configuration
-
-#### 2. DisplayManager
-- Modular display areas
-- Efficient dirty-region updates
-- Color-coded status indicators
-- Font and layout management
-
-#### 3. ButtonManager
-- Hardware interrupt-driven
-- Software debouncing
-- Multiple button support
-- Event-based architecture
-
-#### 4. WebSocketStopwatch
-- SSL WebSocket connection
-- Lag compensation
-- Server time synchronization
-- Split time management
-
-## 🛠️ Development
-
-### Build Requirements
-```ini
-[env:lilygo-t-display-s3]
-platform = espressif32
-board = lilygo-t-display-s3
-framework = arduino
-lib_deps = 
-    links2004/WebSockets @ ^2.4.1
-    bblanchon/ArduinoJson @ ^6.21.3
-```
-
-### Project Structure
 ```
 stopwatch/
-├── platformio.ini          # Build configuration
-├── include/                # Header files
-│   ├── display_manager.h
-│   ├── button_manager.h
-│   ├── connectivity.h
-│   └── websocket_stopwatch.h
-├── src/                    # Source files
-│   ├── main.cpp
+├── platformio.ini              # Build config
+├── include/
+│   ├── config.h                # All constants, pins, StopwatchConfig struct
+│   ├── stopwatch_timer.h       # esp_timer-based precision timer
+│   ├── ntp_manager.h           # SNTP sync manager
+│   ├── websocket_stopwatch.h   # WebSocket race protocol
+│   ├── display_manager.h       # TFT display controller
+│   ├── button_manager.h        # ISR button handler
+│   └── captive_portal.h        # WiFi config portal
+├── src/
+│   ├── main.cpp                # App entry + button loop
+│   ├── stopwatch_timer.cpp
+│   ├── ntp_manager.cpp
+│   ├── websocket_stopwatch.cpp
 │   ├── display_manager.cpp
 │   ├── button_manager.cpp
-│   ├── connectivity.cpp
-│   └── websocket_stopwatch.cpp
-├── lib/                    # Local libraries
-│   └── TFT_eSPI/          # Display driver
-└── docs/                   # Documentation
+│   └── captive_portal.cpp
+├── lib/
+│   └── TFT_eSPI/               # Local display driver
+└── docs/                       # Documentation
 ```
 
-### Building and Flashing
+## Build
+
 ```bash
-# Build the project
+# Build
 pio run
 
-# Flash to device
+# Flash
 pio run --target upload
 
-# Monitor serial output
-pio device monitor
+# Serial monitor
+pio device monitor -b 115200
 ```
 
-## 🔍 Troubleshooting
+### Debug Build
+Add `-DDEBUG_STOPWATCH` to `build_flags` in `platformio.ini` for verbose `DEBUG_LOG()` output.
 
-### Common Issues
+### Dependencies
+- `WebSockets @ ^2.4.1`
+- `ArduinoJson @ ^6.21.3`
+- Local `TFT_eSPI` (in `lib/`)
 
-| Issue | Possible Cause | Solution |
-|-------|---------------|----------|
-| No WiFi connection | Wrong credentials | Reset config, reconfigure |
-| GPIO2 not working | Missing pulldown | Add 1kΩ resistor to GND |
-| WebSocket fails | Server unreachable | Check server address/port |
-| Display garbled | TFT_eSPI config | Verify pin assignments |
-| Time drift | Timer accuracy | Internal ESP32 timer is accurate |
+## Configuration (NVS)
 
-### Reset Procedures
+Stored in ESP32 NVS Preferences (namespace: `"stopwatch"`):
 
-#### Full Reset
-1. Hold GPIO0 + GPIO14 during power-on
-2. Device enters configuration mode
-3. Reconfigure via web portal
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ws_server` | String | `192.168.1.10` | WebSocket + NTP server IP |
+| `ws_port` | UInt | `80` | Server port |
+| `lane` | UInt | `9` | Lane number |
+| `role` | String | `lane` | Device role (`lane` or `starter`) |
+| `ntp_server` | String | *(empty)* | NTP server override (empty = use ws_server) |
 
-#### Config Reset
-1. Delete `/config.json` via serial commands
-2. Device will start configuration portal
+## Resources
 
-### Debug Information
-Monitor serial output at 115200 baud for:
-- System initialization
-- WiFi connection status
-- WebSocket messages
-- Button events
-- Timing information
-- Error messages
-
-## 📊 Performance Metrics
-
-### Timing Accuracy
-- **Display Update**: 100ms intervals
-- **Button Response**: <10ms (interrupt-driven)
-- **WebSocket Latency**: Auto-compensated
-- **Internal Timer**: ±1ms accuracy using millis()
-
-### Power Consumption
-- **Active Mode**: ~150mA (display on)
-- **Sleep Mode**: ~5mA (display off)
-- **Battery Life**: 8-12 hours continuous use
-
-## 🔄 Future Enhancements
-
-- [ ] Touch screen support
-- [ ] SD card logging
-- [ ] Bluetooth connectivity
-- [ ] Multi-language support
-- [ ] Advanced timing statistics
-- [ ] Over-the-air updates
-
-## 📄 License
-
-This project is open source. See individual library licenses for dependencies.
-
-## 🤝 Contributing
-
-Contributions welcome! Please read the contributing guidelines and submit pull requests for any improvements.
-
----
-
-For detailed technical documentation, see:
-- [Display Layout Details](docs/DISPLAY_LAYOUT.md)
-- [Hardware Specifications](docs/HARDWARE.md)
-- [API Reference](docs/API.md)
+- [LilyGO T-Display S3](https://lilygo.cc/products/t-display-s3)
+- [T-Display S3 GitHub](https://github.com/Xinyuan-LilyGO/T-Display-S3)

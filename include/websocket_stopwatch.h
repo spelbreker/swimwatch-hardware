@@ -1,97 +1,153 @@
+/**
+ * @file websocket_stopwatch.h
+ * @brief WebSocket client for remote swim meet competition timing
+ *
+ * Handles server communication for synchronized race timing:
+ * - Receives start/reset/event-heat commands from server
+ * - Sends split times with NTP-synced wall-clock timestamps
+ * - Device registration (role, lane, MAC)
+ * - Remote role/lane configuration from server
+ *
+ * Timing: Uses StopwatchTimer (esp_timer) for local elapsed precision.
+ * Timestamps: Uses time() (NTP-synced RTC) for wall-clock values.
+ */
 #ifndef WEBSOCKET_STOPWATCH_H
 #define WEBSOCKET_STOPWATCH_H
 
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
+#include "stopwatch_timer.h"
 
-// WebSocket message types
-#define WS_MSG_PING "ping"
-#define WS_MSG_PONG "pong"
-#define WS_MSG_START "start"
-#define WS_MSG_RESET "reset"
-#define WS_MSG_SPLIT "split"
-#define WS_MSG_EVENT_HEAT "event-heat"
-#define WS_MSG_SELECT_EVENT "select-event"
-#define WS_MSG_CLEAR "clear"
-#define WS_MSG_DEVICE_REGISTER "device_register"
+// ── WebSocket message type constants ───────────────────────────
+#define WS_MSG_PING               "ping"
+#define WS_MSG_PONG               "pong"
+#define WS_MSG_START              "start"
+#define WS_MSG_RESET              "reset"
+#define WS_MSG_SPLIT              "split"
+#define WS_MSG_EVENT_HEAT         "event-heat"
+#define WS_MSG_SELECT_EVENT       "select-event"
+#define WS_MSG_CLEAR              "clear"
+#define WS_MSG_DEVICE_REGISTER    "device_register"
 #define WS_MSG_DEVICE_UPDATE_ROLE "device_update_role"
 #define WS_MSG_DEVICE_UPDATE_LANE "device_update_lane"
 
-// Stopwatch states
+/** Stopwatch states */
 enum StopwatchState {
     STOPWATCH_STOPPED,
     STOPWATCH_RUNNING,
     STOPWATCH_PAUSED
 };
 
-// Lap data structure
-struct LapData {
-    uint32_t lapTimeMs;
-    uint32_t totalTimeMs;
-    uint64_t serverTimestamp;
+/** Split time info received from other lanes (for starter display) */
+struct SplitTimeInfo {
+    uint8_t  lane;
+    uint64_t timestamp;
+    String   formattedTime;
+    bool     isValid;
 };
 
+/**
+ * @class WebSocketStopwatch
+ * @brief Manages WebSocket connection and race protocol
+ *
+ * Wraps a StopwatchTimer for precise elapsed timing. Uses NTP-synced
+ * time() for absolute timestamps sent to/from the server.
+ */
 class WebSocketStopwatch {
+public:
+    WebSocketStopwatch();
+
+    // ── Configuration ──────────────────────────────────────────
+    void setServerConfig(const String& host, uint16_t port,
+                         const String& path = "/ws", bool ssl = false);
+    void setLaneNumber(uint8_t lane);
+    void setDeviceRole(const String& role);
+
+    // ── Connection ─────────────────────────────────────────────
+    bool connect();
+    void disconnect();
+    bool isConnected();
+    void loop();
+
+    // ── Stopwatch control ──────────────────────────────────────
+    void start();
+    void stop();
+    void reset();
+    void addLap();
+    void sendStart(const String& event, const String& heat);
+
+    // ── State queries ──────────────────────────────────────────
+    StopwatchState getState();
+    uint32_t       getElapsedTime();
+    uint8_t        getLapCount();
+    String         getCurrentEvent();
+    String         getCurrentHeat();
+    int            getPingMs();
+    const SplitTimeInfo* getSplitTimes();
+
+    // ── Display control ────────────────────────────────────────
+    void clearSplitTimes();
+    void clearDisplay();
+
+    // ── Remote control (via WebSocket) ─────────────────────────
+    void handleRemoteStart(uint64_t serverTimestamp);
+    void handleRemoteReset();
+
+    // ── Utility ────────────────────────────────────────────────
+    String formatTime(uint32_t milliseconds);
+
+    // ── Callbacks (set by main.cpp) ────────────────────────────
+    void (*onStateChanged)(StopwatchState newState)                      = nullptr;
+    void (*onLapAdded)(uint8_t lapNumber, uint32_t lapTime,
+                       uint32_t totalTime)                               = nullptr;
+    void (*onConnectionChanged)(bool connected)                          = nullptr;
+    void (*onEventHeatChanged)(const String& event, const String& heat)  = nullptr;
+    void (*onSplitTimeReceived)(uint8_t lane, const String& time)        = nullptr;
+    void (*onDisplayClear)()                                             = nullptr;
+    void (*onDeviceConfigChanged)(const String& role, uint8_t lane)      = nullptr;
+
 private:
     WebSocketsClient webSocket;
-    
-    // Connection settings
-    String serverHost;
+
+    // ── Connection ─────────────────────────────────────────────
+    String   serverHost;
     uint16_t serverPort;
-    String serverPath;
-    bool useSSL;
-    
-    // Connection state
-    bool wsConnected;
+    String   serverPath;
+    bool     useSSL;
+    bool     wsConnected;
     unsigned long lastReconnectAttempt;
     unsigned long lastPingTime;
-    unsigned long lastPongTime;
-    
-    // Device registration
+    int      pingMs;
+
+    // ── Device identity ────────────────────────────────────────
     String deviceMAC;
     String deviceRole;
-    bool isRegistered;
-    int pingMs;
-    int bestPingMs; // Track best (lowest) ping time for more accurate lag compensation
-    uint8_t pingSampleCount; // Number of ping samples collected
-    int64_t serverTimeOffset; // Client time offset from server time
-    bool timeSync; // Whether time synchronization is active
-    static const unsigned long RECONNECT_INTERVAL = 5000;
-    static const unsigned long PING_INTERVAL = 5000; // Send ping every 5 seconds (per new spec)
-    static const uint8_t MAX_PING_SAMPLES = 10; // Number of samples to consider for best ping
-    
-    // Stopwatch state
-    StopwatchState currentState;
-    uint32_t startTimeMs;           // Local start time (for fallback)
-    uint32_t elapsedMs;
-    uint64_t syncStartTime;         // Synchronized start time from server
-    bool startLocked;               // Prevent multiple starts until server reset
-    
-    // Event and Heat information
+    bool   isRegistered;
+
+    // ── Stopwatch ──────────────────────────────────────────────
+    StopwatchTimer   timer;
+    StopwatchState   currentState;
+    uint64_t         syncStartTimestamp;   ///< Server's start epoch (wall-clock)
+    bool             startLocked;
+
+    // ── Event / Heat ───────────────────────────────────────────
     String currentEvent;
     String currentHeat;
-    
-    // Lane and split time information
-    struct SplitTimeInfo {
-        uint8_t lane;
-        uint64_t timestamp;
-        String formattedTime;
-        bool isValid;
-    };
+
+    // ── Lane split times (from server, for starter display) ────
     static const uint8_t MAX_LANES = 10;
     SplitTimeInfo splitTimes[MAX_LANES];
-    
-    // Lap management
+
+    // ── Lap tracking ───────────────────────────────────────────
     static const uint8_t MAX_LAPS = 90;
-    LapData laps[MAX_LAPS];
     uint8_t lapCount;
     uint8_t laneNumber;
-    
-    // Timing
-    unsigned long lastDisplayUpdate;
-    static const unsigned long DISPLAY_REFRESH_INTERVAL = 50; // 20Hz
-    
-    // WebSocket event handlers
+
+    // ── Timing constants ───────────────────────────────────────
+    static const unsigned long RECONNECT_INTERVAL = 5000;
+    static const unsigned long PING_INTERVAL      = 5000;
+
+    // ── Message handlers ───────────────────────────────────────
     static void webSocketEventWrapper(WStype_t type, uint8_t* payload, size_t length);
     void handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length);
     void handleStartMessage(JsonDocument& doc);
@@ -99,75 +155,15 @@ private:
     void handleSplitMessage(JsonDocument& doc);
     void handleEventHeatMessage(JsonDocument& doc);
     void handleClearMessage(JsonDocument& doc);
-    void handlePingMessage(JsonDocument& doc);
     void handlePongMessage(JsonDocument& doc);
     void handleDeviceUpdateRoleMessage(JsonDocument& doc);
     void handleDeviceUpdateLaneMessage(JsonDocument& doc);
-    
-    // Network and timing
+
+    // ── Network helpers ────────────────────────────────────────
     void sendSplitTime(uint32_t elapsedTime);
     void sendMessage(const String& message);
-    void sendJsonPing(); // Send JSON-based ping message
-    void sendDeviceRegistration(); // Send device registration to server
-    
-    // Time synchronization
-    uint64_t getServerTime();
-    uint64_t getSynchronizedTime(); // Get current time with server offset applied
-    
-public:
-    WebSocketStopwatch();
-    
-    // Configuration
-    void setServerConfig(const String& host, uint16_t port, const String& path = "/ws", bool ssl = true);
-    void setLaneNumber(uint8_t lane);
-    void setDeviceRole(const String& role);
-    
-    // Connection management
-    bool connect();
-    void disconnect();
-    bool isConnected();
-    void loop();
-    
-    // Stopwatch control
-    void start();
-    void stop();
-    void reset();
-    void addLap();
-    
-    // Starter control (client -> server)
-    void sendStart(const String& event, const String& heat);
-    
-    // State queries
-    StopwatchState getState();
-    uint32_t getElapsedTime();
-    uint8_t getLapCount();
-    const LapData* getLaps();
-    bool hasServerTime();
-    String getCurrentEvent();
-    String getCurrentHeat();
-    const SplitTimeInfo* getSplitTimes();
-    int getPingMs(); // Get current ping time in milliseconds
-    
-    // Display control
-    void clearSplitTimes();
-    void clearDisplay();
-    
-    // Remote control (via WebSocket)
-    void handleRemoteStart(uint64_t serverTime);
-    void handleRemoteReset();
-    
-    // Time formatting
-    String formatTime(uint32_t milliseconds);
-    
-    // Callbacks (to be set by main application)
-    void (*onStateChanged)(StopwatchState newState);
-    void (*onLapAdded)(uint8_t lapNumber, uint32_t lapTime, uint32_t totalTime);
-    void (*onConnectionChanged)(bool connected);
-    void (*onTimeSync)(bool synced);
-    void (*onEventHeatChanged)(const String& event, const String& heat);
-    void (*onSplitTimeReceived)(uint8_t lane, const String& time);
-    void (*onDisplayClear)();
-    void (*onDeviceConfigChanged)(const String& role, uint8_t lane);
+    void sendJsonPing();
+    void sendDeviceRegistration();
 };
 
 #endif // WEBSOCKET_STOPWATCH_H
