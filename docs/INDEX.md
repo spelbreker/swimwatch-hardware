@@ -5,6 +5,7 @@
 | Document | Audience | Contents |
 |----------|----------|----------|
 | [README.md](../README.md) | Everyone | Project overview, quick start, features |
+| [TIMING_EXPLANATION.md](TIMING_EXPLANATION.md) | Non-technical | How the timing system works, accuracy explained |
 | [API.md](API.md) | Developers | Full API reference for all modules |
 | [DISPLAY_MANAGER.md](DISPLAY_MANAGER.md) | Developers | Display layout, colours, rendering |
 | [HARDWARE.md](HARDWARE.md) | Hardware / Advanced | Pin assignments, wiring, power |

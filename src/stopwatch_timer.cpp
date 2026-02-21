@@ -24,6 +24,16 @@ void StopwatchTimer::start() {
     DEBUG_LOG("Timer started at %lld µs", _startTimeUs);
 }
 
+void StopwatchTimer::startWithOffset(int64_t offsetUs) {
+    if (_running) return;
+    // Backdate start time so elapsed already accounts for network delay
+    _startTimeUs = esp_timer_get_time() - offsetUs;
+    _running = true;
+    _splits.clear();
+    DEBUG_LOG("Timer started with offset %lld µs (effective start: %lld µs)",
+             offsetUs, _startTimeUs);
+}
+
 void StopwatchTimer::stop() {
     if (!_running) return;
     _stopTimeUs = esp_timer_get_time();

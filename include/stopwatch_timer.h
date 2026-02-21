@@ -45,6 +45,13 @@ public:
     /** Start the timer. Clears splits. No-op if already running. */
     void start();
 
+    /**
+     * Start the timer, backdating by an offset to compensate for network delay.
+     * The elapsed time will read as if the timer started `offsetUs` microseconds ago.
+     * @param offsetUs  Microseconds to subtract from the current time as the start point
+     */
+    void startWithOffset(int64_t offsetUs);
+
     /** Stop the timer. Freezes elapsed time. No-op if not running. */
     void stop();
 

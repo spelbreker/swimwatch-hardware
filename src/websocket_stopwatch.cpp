@@ -13,6 +13,7 @@
 #include "config.h"
 #include <WiFi.h>
 #include <time.h>
+#include <sys/time.h>
 
 // Static instance pointer for WebSocket callback
 static WebSocketStopwatch* wsInstance = nullptr;
@@ -173,17 +174,23 @@ void WebSocketStopwatch::sendStart(const String& event, const String& heat) {
         return;
     }
 
+    // Capture NTP-synced wall-clock with microsecond precision
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+
     StaticJsonDocument<256> doc;
     doc["type"] = WS_MSG_START;
     doc["event"] = event;
     doc["heat"] = heat;
-    doc["timestamp"] = (uint64_t)time(nullptr);  // NTP wall-clock
+    doc["timestamp_sec"]  = (int64_t)tv.tv_sec;
+    doc["timestamp_usec"] = (int64_t)tv.tv_usec;
 
     String message;
     serializeJson(doc, message);
     sendMessage(message);
     startLocked = true;
-    DEBUG_LOG("Start sent: event=%s heat=%s", event.c_str(), heat.c_str());
+    DEBUG_LOG("Start sent: event=%s heat=%s ts=%ld.%06ld",
+             event.c_str(), heat.c_str(), (long)tv.tv_sec, (long)tv.tv_usec);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -222,11 +229,30 @@ void WebSocketStopwatch::clearDisplay() {
 // Remote Control
 // ═══════════════════════════════════════════════════════════════
 
-void WebSocketStopwatch::handleRemoteStart(uint64_t serverTimestamp) {
-    syncStartTimestamp = serverTimestamp;
+void WebSocketStopwatch::handleRemoteStart(int64_t timestampSec, int64_t timestampUsec) {
+    syncStartTimestamp = (uint64_t)timestampSec;
     if (currentState != STOPWATCH_RUNNING) {
-        start();
-        DEBUG_LOG("Remote start, server timestamp: %llu", serverTimestamp);
+        if (timestampSec > 0) {
+            // Calculate how long ago the start actually happened using
+            // NTP-synced clocks on both devices.  This compensates for
+            // the WebSocket message delivery delay (typically 5-50ms LAN).
+            struct timeval now;
+            gettimeofday(&now, nullptr);
+            int64_t delayUs = ((int64_t)now.tv_sec  - timestampSec) * 1000000LL
+                            + ((int64_t)now.tv_usec - timestampUsec);
+            if (delayUs < 0) delayUs = 0;  // clock skew guard
+
+            timer.startWithOffset(delayUs);
+            currentState = STOPWATCH_RUNNING;
+            lapCount = 0;
+            DEBUG_LOG("Remote start, offset %lld µs (%.1f ms)",
+                     delayUs, delayUs / 1000.0);
+            if (onStateChanged) onStateChanged(currentState);
+        } else {
+            // No timestamp — fall back to starting NOW (legacy server)
+            start();
+            DEBUG_LOG("Remote start (no timestamp, no offset)");
+        }
     }
 }
 
@@ -363,8 +389,9 @@ void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, s
 // ═══════════════════════════════════════════════════════════════
 
 void WebSocketStopwatch::handleStartMessage(JsonDocument& doc) {
-    uint64_t ts = doc.containsKey("timestamp") ? doc["timestamp"].as<uint64_t>() : 0;
-    handleRemoteStart(ts);
+    int64_t tsSec  = doc.containsKey("timestamp_sec")  ? doc["timestamp_sec"].as<int64_t>()  : 0;
+    int64_t tsUsec = doc.containsKey("timestamp_usec") ? doc["timestamp_usec"].as<int64_t>() : 0;
+    handleRemoteStart(tsSec, tsUsec);
     startLocked = true;
 }
 

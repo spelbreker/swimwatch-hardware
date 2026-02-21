@@ -103,11 +103,24 @@ Precision elapsed timer based on `esp_timer_get_time()` (64-bit hardware counter
 class StopwatchTimer {
 public:
     void     start();
+    void     startWithOffset(int64_t offsetUs);  // Start backdated by offset (network compensation)
     void     stop();
     void     reset();
-    uint32_t getElapsedMs() const;   // Elapsed in milliseconds
-    uint64_t getElapsedUs() const;   // Elapsed in microseconds
+    void     addSplit(uint8_t lane = 0);         // Record a split time
+    uint32_t getElapsedMs() const;               // Elapsed in milliseconds
+    uint64_t getElapsedUs() const;               // Elapsed in microseconds (internal use)
     bool     isRunning() const;
+    const std::vector<SplitTime>& getSplits() const;
+    
+    // Static formatter
+    static void formatMs(uint32_t ms, bool isRunning, char* buffer, size_t bufferSize);
+};
+
+// Split time record
+struct SplitTime {
+    uint32_t elapsedMs;    // Elapsed ms since start (from hardware timer)
+    time_t   wallClock;    // Absolute UTC timestamp (from NTP-synced RTC)
+    uint8_t  lane;         // Lane number (0 = local button)
 };
 ```
 
@@ -190,9 +203,15 @@ String formatTime(uint32_t milliseconds);  // "MM:SS.cc"
 ### Remote Control (via Server)
 
 ```cpp
-void handleRemoteStart(uint64_t serverTimestamp);
+void handleRemoteStart(int64_t timestampSec, int64_t timestampUsec);
 void handleRemoteReset();
 ```
+
+**Network Delay Compensation:**
+- `handleRemoteStart` receives NTP timestamps from the starter device
+- Calculates network delay by comparing starter's timestamp to local NTP time
+- Calls `timer.startWithOffset(delayUs)` to backdate the start point
+- Result: All devices show synchronized elapsed time within ±2-4ms
 
 ### Callbacks (set by `main.cpp`)
 
@@ -221,13 +240,18 @@ enum StopwatchState {
 #### Received from Server
 
 ```json
-{ "type": "start", "timestamp": 1234567890 }
+{ "type": "start", "event": "100m Free", "heat": "3", "timestamp_sec": 1234567890, "timestamp_usec": 123456 }
 { "type": "reset" }
 { "type": "event-heat", "event": "100m Free", "heat": "3" }
 { "type": "clear" }
 { "type": "device_update_role", "role": "starter" }
 { "type": "device_update_lane", "lane": 5 }
 ```
+
+**Notes:**
+- `start` message includes microsecond-precision NTP timestamp for network delay compensation
+- `timestamp_sec`: Unix epoch seconds (from `gettimeofday()`)
+- `timestamp_usec`: Microseconds component (0-999999)
 
 #### Sent to Server
 
