@@ -394,10 +394,10 @@ void onLapAdded(uint8_t lapNumber, uint32_t lapTime, uint32_t totalTime) {
     String lapFormatted   = stopwatch.formatTime(lapTime);
     DEBUG_LOG("Split %d: total=%s lap=%s", lapNumber, totalFormatted.c_str(), lapFormatted.c_str());
     
-    // Rolling display — shift and append
-    lastSplits[0] = lastSplits[1];
-    lastSplits[1] = lastSplits[2];
-    lastSplits[2] = {lapNumber, totalTime, totalFormatted, lapTime, lapFormatted, true};
+    // Rolling display — newest split always at the top (row 1)
+    lastSplits[2] = lastSplits[1];
+    lastSplits[1] = lastSplits[0];
+    lastSplits[0] = {lapNumber, totalTime, totalFormatted, lapTime, lapFormatted, true};
     
     for (int i = 0; i < 3; i++) {
         if (lastSplits[i].valid) {
