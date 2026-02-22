@@ -260,9 +260,13 @@ enum StopwatchState {
 
 ```json
 { "type": "device_register", "mac": "AA:BB:CC:DD:EE:FF", "role": "lane", "lane": 9 }
-{ "type": "split", "lane": 9, "time-ms": 31250, "time": "00:31.25", "timestamp": 1234567890 }
+{ "type": "split", "lane": 9, "elapsed_ms": 31250, "timestamp": 1234567890123 }
 { "type": "pong" }
 ```
+
+**Notes:**
+- `split.elapsed_ms`: milliseconds since the race start (from `esp_timer_get_time()`)
+- `split.timestamp`: NTP wall-clock at the moment of the split in Unix epoch milliseconds (from `gettimeofday()`)
 
 ---
 
@@ -386,8 +390,8 @@ ISR-driven button handler with 200ms software debounce.
 enum ButtonEvent {
     BUTTON_NONE,
     BUTTON_START_STOP,   // GPIO0  - toggle start/stop
-    BUTTON_RESET,        // GPIO14 - reset (only when stopped)
-    BUTTON_LAP_PRESSED   // GPIO2  - split / starter send
+    BUTTON_RESET,        // GPIO14 - split when running / reset when stopped
+    BUTTON_LAP_PRESSED   // GPIO2  - split (external trigger)
 };
 ```
 
@@ -405,7 +409,9 @@ public:
 
 **Button Hardware:**
 - GPIO0/GPIO14: Onboard buttons, active LOW, internal pullup
-- GPIO2: External split trigger, active LOW
+- GPIO2: External split trigger, active HIGH, internal pulldown — button connects GPIO2 to 3.3V
+
+**GPIO2 strapping pin note:** On ESP32-S3, GPIO2 is a strapping pin and hardware interrupts can be unreliable. `getButtonEvent()` therefore also polls `digitalRead(PIN_BUTTON_SPLIT)` directly on each call (rising-edge tracked via `_splitPinWasLow`) as a fallback alongside the ISR.
 
 ---
 

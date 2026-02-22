@@ -208,8 +208,8 @@ ISR-driven with 200 ms software debounce (`BUTTON_DEBOUNCE_MS`).
 | GPIO | Event | Function |
 |------|-------|----------|
 | 0 | `BUTTON_START_STOP` | Toggle start/stop |
-| 14 | `BUTTON_RESET` | Reset (only when stopped) |
-| 2 | `BUTTON_LAP_PRESSED` | Record split / send start |
+| 14 | `BUTTON_RESET` | Split when running / Reset when stopped |
+| 2 | `BUTTON_LAP_PRESSED` | External split trigger |
 
 Each button gets a `volatile bool` flag set in the ISR, cleared when `getButtonEvent()` is called.
 

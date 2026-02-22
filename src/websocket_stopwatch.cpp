@@ -284,11 +284,16 @@ String WebSocketStopwatch::formatTime(uint32_t milliseconds) {
 void WebSocketStopwatch::sendSplitTime(uint32_t elapsedTime) {
     if (!wsConnected) return;
 
+    // NTP wall-clock in milliseconds (same precision as sendStart)
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    uint64_t timestampMs = (uint64_t)tv.tv_sec * 1000ULL + (uint64_t)tv.tv_usec / 1000ULL;
+
     StaticJsonDocument<300> doc;
     doc["type"] = WS_MSG_SPLIT;
     doc["lane"] = laneNumber;
     doc["elapsed_ms"] = elapsedTime;
-    doc["timestamp"] = (uint64_t)time(nullptr);  // NTP wall-clock
+    doc["timestamp"] = timestampMs;  // Milliseconds since epoch (NTP-synced)
 
     String message;
     serializeJson(doc, message);

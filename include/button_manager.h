@@ -52,6 +52,10 @@ private:
     volatile uint32_t _lastReset;
     volatile uint32_t _lastSplit;
 
+    // Polling state for GPIO2 fallback (strapping pin ISR workaround)
+    // GPIO2 uses INPUT_PULLDOWN + RISING: track last-seen LOW state
+    bool _splitPinWasLow;
+
     // Static instance + ISR wrappers (attachInterrupt requires static)
     static ButtonManager* _instance;
     static void IRAM_ATTR _isrStartStop();

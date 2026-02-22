@@ -22,8 +22,8 @@
 | GPIO | Function | Type | Notes |
 |------|----------|------|-------|
 | 0 | Start / Stop | Onboard BUTTON1 | Active LOW, internal pullup |
-| 14 | Reset | Onboard BUTTON2 | Active LOW, internal pullup |
-| 2 | Split trigger | External | Active LOW, needs external pullup or wiring |
+| 14 | Split (running) / Reset (stopped) | Onboard BUTTON2 | Active LOW, internal pullup |
+| 2 | Split trigger | External | Active HIGH, internal pulldown — button connects GPIO2 to 3.3V |
 
 ### Display (managed by TFT_eSPI `User_Setup.h`)
 
@@ -70,11 +70,14 @@ uint8_t pct = constrain((voltage - BATTERY_MIN_VOLTAGE) /
 GPIO0 (onboard, internal pullup):
     3.3V ---[PULLUP]--- GPIO0 ---[BUTTON]--- GND
 
-GPIO14 (onboard, internal pullup):
+GPIO14 (onboard, internal pullup, dual-use):
     3.3V ---[PULLUP]--- GPIO14 ---[BUTTON]--- GND
+    - While running : records a split time
+    - While stopped : resets the stopwatch
 
-GPIO2 (external split trigger, active LOW):
-    3.3V ---[10k pullup]--- GPIO2 ---[BUTTON]--- GND
+GPIO2 (external split trigger, active HIGH, internal pulldown):
+    GND ---[PULLDOWN]--- GPIO2 ---[BUTTON]--- 3.3V
+    No external resistor required.
 ```
 
 ---

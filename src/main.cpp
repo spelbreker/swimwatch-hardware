@@ -46,13 +46,19 @@ bool systemInitialized = false;
 
 // Split time tracking for display (last 3 splits)
 struct SplitTimeDisplay {
-    uint8_t splitNumber;
-    uint32_t totalTime;
-    String formattedTime;
-    bool valid;
+    uint8_t  splitNumber;
+    uint32_t totalTime;        // Total elapsed ms
+    String   formattedTime;    // Formatted total time
+    uint32_t lapTime;          // This lap interval ms
+    String   formattedLapTime; // Formatted lap interval
+    bool     valid;
 };
 
-SplitTimeDisplay lastSplits[3] = {{0, 0, "", false}, {0, 0, "", false}, {0, 0, "", false}};
+SplitTimeDisplay lastSplits[3] = {
+    {0, 0, "", 0, "", false},
+    {0, 0, "", 0, "", false},
+    {0, 0, "", 0, "", false}
+};
 
 // ── Configuration loaded from NVS Preferences ─────────────────
 StopwatchConfig config;
@@ -274,8 +280,11 @@ void handleButtonEvents() {
             break;
 
         case BUTTON_RESET:
-            // GPIO14: Reset (only when stopped)
-            if (stopwatch.getState() != STOPWATCH_RUNNING) {
+            // GPIO14: Split when running, Reset when stopped
+            if (stopwatch.getState() == STOPWATCH_RUNNING) {
+                stopwatch.addLap();
+                DEBUG_LOG("Button → split (BUTTON2 while running)");
+            } else {
                 stopwatch.reset();
                 clearSplitDisplay();
                 DEBUG_LOG("Button → reset");
@@ -380,18 +389,23 @@ void onStopwatchStateChanged(StopwatchState newState) {
     DEBUG_LOG("Stopwatch state: %d", newState);
 }
 
-void onLapAdded(uint8_t lapNumber, uint32_t /* lapTime */, uint32_t totalTime) {
-    String formatted = stopwatch.formatTime(totalTime);
-    DEBUG_LOG("Split %d: %s", lapNumber, formatted.c_str());
+void onLapAdded(uint8_t lapNumber, uint32_t lapTime, uint32_t totalTime) {
+    String totalFormatted = stopwatch.formatTime(totalTime);
+    String lapFormatted   = stopwatch.formatTime(lapTime);
+    DEBUG_LOG("Split %d: total=%s lap=%s", lapNumber, totalFormatted.c_str(), lapFormatted.c_str());
     
     // Rolling display — shift and append
     lastSplits[0] = lastSplits[1];
     lastSplits[1] = lastSplits[2];
-    lastSplits[2] = {lapNumber, totalTime, formatted, true};
+    lastSplits[2] = {lapNumber, totalTime, totalFormatted, lapTime, lapFormatted, true};
     
     for (int i = 0; i < 3; i++) {
         if (lastSplits[i].valid) {
-            display.updateLapTime(i + 1, "Split " + String(lastSplits[i].splitNumber) + ": " + lastSplits[i].formattedTime);
+            // One line: "#1  01:23.45  +00:25.30"
+            String line = "#" + String(lastSplits[i].splitNumber)
+                        + "  " + lastSplits[i].formattedTime
+                        + "  +" + lastSplits[i].formattedLapTime;
+            display.updateLapTime(i + 1, line);
         } else {
             display.updateLapTime(i + 1, "");
         }
@@ -443,7 +457,7 @@ void onDeviceConfigChanged(const String& role, uint8_t lane) {
 
 void clearSplitDisplay() {
     for (int i = 0; i < 3; i++) {
-        lastSplits[i] = {0, 0, "", false};
+        lastSplits[i] = {0, 0, "", 0, "", false};
         display.updateLapTime(i + 1, "");
     }
 }
