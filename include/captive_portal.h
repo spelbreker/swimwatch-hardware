@@ -5,6 +5,7 @@
 #include <DNSServer.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include "config.h"
 
 class CaptivePortalManager {
 private:
@@ -19,6 +20,7 @@ private:
     String configuredWsPort;
     String configuredLane;
     String configuredRole;        // "lane" or "starter"
+    String configuredNtpServer;   // NTP server (empty = use server IP)
     
     void setupWebServer();
     void handleRoot();

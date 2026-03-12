@@ -1,11 +1,12 @@
 #include "captive_portal.h"
+#include "config.h"
 
 // HTML for the configuration page
 const char CONFIG_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML>
 <html>
 <head>
-    <title>T-Display S3 Setup</title>
+    <title>SwimWatch Setup</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; background: #f0f0f0; }
@@ -16,13 +17,12 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
         input[type="submit"]:hover { background-color: #45a049; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; font-weight: bold; }
-        .inline { display:flex; gap:12px; align-items:center; }
-        .half { width: 50%; }
+        .hint { font-size: 0.85em; color: #666; margin-top: 2px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>T-Display S3 Stopwatch Setup</h1>
+        <h1>SwimWatch Setup</h1>
         <form action="/config" method="POST">
             <div class="form-group">
                 <label for="ssid">WiFi Network:</label>
@@ -35,13 +35,20 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
             </div>
             
             <div class="form-group">
-                <label for="server">WebSocket Server:</label>
-                <input type="text" id="server" name="server" value="scherm.azckamp.nl" placeholder="Server address">
+                <label for="server">Server IP:</label>
+                <input type="text" id="server" name="server" value="192.168.8.10" placeholder="192.168.1.10">
+                <div class="hint">Used for WebSocket connection</div>
             </div>
             
             <div class="form-group">
                 <label for="port">Server Port:</label>
-                <input type="number" id="port" name="port" value="443" placeholder="443">
+                <input type="number" id="port" name="port" value="80" placeholder="80">
+            </div>
+
+            <div class="form-group">
+                <label for="ntp">NTP Server:</label>
+                <input type="text" id="ntp" name="ntp_server" value="" placeholder="Leave empty to use Server IP">
+                <div class="hint">Leave empty to use the Server IP for NTP sync</div>
             </div>
             
             <div class="form-group">
@@ -86,7 +93,7 @@ const char SUCCESS_HTML[] PROGMEM = R"rawliteral(
 <body>
     <div class="container">
         <h1>Configuration Saved!</h1>
-        <p>Your T-Display S3 will now restart and connect to the configured WiFi network.</p>
+        <p>Your SwimWatch will now restart and connect to the configured WiFi network.</p>
         <p>The device will be ready for stopwatch operation in a few seconds.</p>
     </div>
 </body>
@@ -104,7 +111,7 @@ bool CaptivePortalManager::begin() {
     
     // Start WiFi in AP mode
     WiFi.mode(WIFI_AP);
-    WiFi.softAP("T-Display-S3-Setup", "stopwatch123");
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
     
     Serial.print("AP IP address: ");
     Serial.println(WiFi.softAPIP());
@@ -136,10 +143,11 @@ void CaptivePortalManager::handleConfig() {
     if (server.hasArg("ssid")) {
         configuredSSID = server.arg("ssid");
         configuredPassword = server.hasArg("password") ? server.arg("password") : "";
-        configuredWsServer = server.hasArg("server") ? server.arg("server") : "scherm.azckamp.nl";
-        configuredWsPort = server.hasArg("port") ? server.arg("port") : "443";
+        configuredWsServer = server.hasArg("server") ? server.arg("server") : DEFAULT_SERVER_IP;
+        configuredWsPort = server.hasArg("port") ? server.arg("port") : String(DEFAULT_SERVER_PORT);
     configuredRole = server.hasArg("role") ? server.arg("role") : "lane";
     configuredLane = server.hasArg("lane") ? server.arg("lane") : "9";
+    configuredNtpServer = server.hasArg("ntp_server") ? server.arg("ntp_server") : "";
 
         // Validate role parameter
         if (configuredRole != "lane" && configuredRole != "starter") {
@@ -187,6 +195,7 @@ void CaptivePortalManager::saveConfiguration() {
     preferences.putUInt("ws_port", configuredWsPort.toInt());
     preferences.putUInt("lane", configuredLane.toInt());
     preferences.putString("role", configuredRole.length() ? configuredRole : String("lane"));
+    preferences.putString("ntp_server", configuredNtpServer);
     preferences.end();
     
     Serial.println("Configuration saved to preferences");

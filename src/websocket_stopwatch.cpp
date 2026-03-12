@@ -1,98 +1,91 @@
+/**
+ * @file websocket_stopwatch.cpp
+ * @brief WebSocket client for remote swim meet competition timing
+ *
+ * Changes from original:
+ * - Removed custom ping/pong RTT time sync (replaced by NTP)
+ * - Uses StopwatchTimer (esp_timer_get_time) for elapsed timing
+ * - Uses time() (NTP-synced) for wall-clock timestamps
+ * - Simplified constructor and state management
+ * - Reduced logging behind DEBUG_LOG macro
+ */
 #include "websocket_stopwatch.h"
+#include "config.h"
+#include <WiFi.h>
+#include <time.h>
+#include <sys/time.h>
 
 // Static instance pointer for WebSocket callback
-WebSocketStopwatch* wsStopwatchInstance = nullptr;
+static WebSocketStopwatch* wsInstance = nullptr;
 
-WebSocketStopwatch::WebSocketStopwatch() 
-    : serverHost("scherm.azckamp.nl")
-    , serverPort(443)
-    , serverPath("/ws")
-    , useSSL(true)
+// ═══════════════════════════════════════════════════════════════
+// Construction & Configuration
+// ═══════════════════════════════════════════════════════════════
+
+WebSocketStopwatch::WebSocketStopwatch()
+    : serverHost(DEFAULT_SERVER_IP)
+    , serverPort(DEFAULT_SERVER_PORT)
+    , serverPath(DEFAULT_WS_PATH)
+    , useSSL(false)
     , wsConnected(false)
     , lastReconnectAttempt(0)
     , lastPingTime(0)
-    , lastPongTime(0)
     , pingMs(-1)
-    , bestPingMs(-1)
-    , pingSampleCount(0)
-    , serverTimeOffset(0)
-    , timeSync(false)
-    , currentState(STOPWATCH_STOPPED)
-    , startTimeMs(0)
-    , elapsedMs(0)
-    , syncStartTime(0)
-    , startLocked(false)
-    , lapCount(0)
-    , laneNumber(9)
-    , lastDisplayUpdate(0)
     , deviceMAC("")
     , deviceRole("lane")
     , isRegistered(false)
-    , onStateChanged(nullptr)
-    , onLapAdded(nullptr)
-    , onConnectionChanged(nullptr)
-    , onTimeSync(nullptr)
-    , onEventHeatChanged(nullptr)
-    , onSplitTimeReceived(nullptr)
-    , onDisplayClear(nullptr)
-    , onDeviceConfigChanged(nullptr) {
-    
-    // Set static instance for callback
-    wsStopwatchInstance = this;
-    
-    // Initialize lap array
-    for (uint8_t i = 0; i < MAX_LAPS; i++) {
-        laps[i] = {0, 0, 0};
-    }
-    
-    // Initialize split times array
+    , currentState(STOPWATCH_STOPPED)
+    , syncStartTimestamp(0)
+    , startLocked(false)
+    , currentEvent("")
+    , currentHeat("")
+    , lapCount(0)
+    , laneNumber(9) {
+
+    wsInstance = this;
+
     for (uint8_t i = 0; i < MAX_LANES; i++) {
         splitTimes[i] = {0, 0, "", false};
     }
-    
-    // Initialize event/heat
-    currentEvent = "";
-    currentHeat = "";
 }
 
-void WebSocketStopwatch::setServerConfig(const String& host, uint16_t port, const String& path, bool ssl) {
+void WebSocketStopwatch::setServerConfig(const String& host, uint16_t port,
+                                          const String& path, bool ssl) {
     serverHost = host;
     serverPort = port;
     serverPath = path;
     useSSL = ssl;
-    
-    Serial.printf("WebSocket server config: %s%s:%d%s\n", 
-                  ssl ? "wss://" : "ws://", host.c_str(), port, path.c_str());
+    DEBUG_LOG("WS config: %s%s:%d%s", ssl ? "wss://" : "ws://",
+              host.c_str(), port, path.c_str());
 }
 
 void WebSocketStopwatch::setLaneNumber(uint8_t lane) {
     laneNumber = lane;
-    Serial.printf("Lane number set to: %d\n", laneNumber);
+    DEBUG_LOG("Lane: %d", laneNumber);
 }
 
 void WebSocketStopwatch::setDeviceRole(const String& role) {
     deviceRole = role;
-    Serial.printf("Device role set to: %s\n", deviceRole.c_str());
+    DEBUG_LOG("Role: %s", deviceRole.c_str());
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Connection Management
+// ═══════════════════════════════════════════════════════════════
+
 bool WebSocketStopwatch::connect() {
-    Serial.println("Connecting to WebSocket server...");
-    
-    // Retrieve device MAC address
+    DEBUG_LOG("Connecting to WebSocket server...");
     deviceMAC = WiFi.macAddress();
-    Serial.printf("Device MAC address: %s\n", deviceMAC.c_str());
-    
+
     if (useSSL) {
         webSocket.beginSSL(serverHost.c_str(), serverPort, serverPath.c_str());
     } else {
         webSocket.begin(serverHost.c_str(), serverPort, serverPath.c_str());
     }
-    
+
     webSocket.onEvent(webSocketEventWrapper);
     webSocket.setReconnectInterval(RECONNECT_INTERVAL);
-    webSocket.enableHeartbeat(15000, 3000, 2); // Enable heartbeat
-    
-    Serial.println("WebSocket connection initiated");
+    webSocket.enableHeartbeat(15000, 3000, 2);
     return true;
 }
 
@@ -100,11 +93,7 @@ void WebSocketStopwatch::disconnect() {
     webSocket.disconnect();
     wsConnected = false;
     isRegistered = false;
-    Serial.println("WebSocket disconnected");
-    
-    if (onConnectionChanged) {
-        onConnectionChanged(false);
-    }
+    if (onConnectionChanged) onConnectionChanged(false);
 }
 
 bool WebSocketStopwatch::isConnected() {
@@ -113,552 +102,373 @@ bool WebSocketStopwatch::isConnected() {
 
 void WebSocketStopwatch::loop() {
     webSocket.loop();
-    
+
     unsigned long now = millis();
-    
-    // Handle reconnection if needed
-    if (!wsConnected && now - lastReconnectAttempt > RECONNECT_INTERVAL) {
-        lastReconnectAttempt = now;
-        Serial.println("Attempting WebSocket reconnection...");
-    }
-    
-    // Send JSON ping with appropriate interval based on sync state
-    unsigned long pingInterval = PING_INTERVAL;
-    
-    // Initial rapid ping sequence (5 pings at 500ms intervals) if not synced
-    if (!timeSync && pingSampleCount < 5) {
-        pingInterval = 500; // 500ms for rapid initial sync
-    }
-    
-    if (wsConnected && now - lastPingTime > pingInterval) {
+
+    // Periodic JSON ping for latency measurement
+    if (wsConnected && (now - lastPingTime > PING_INTERVAL)) {
         lastPingTime = now;
         sendJsonPing();
-        
-        if (!timeSync && pingSampleCount < 5) {
-            Serial.printf("Initial ping %d/5 sent\n", pingSampleCount + 1);
-        } else {
-            Serial.println("Regular JSON ping sent");
-        }
     }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Stopwatch Control
+// ═══════════════════════════════════════════════════════════════
+
 void WebSocketStopwatch::start() {
-    if (currentState != STOPWATCH_RUNNING) {
-        startTimeMs = millis();
-        currentState = STOPWATCH_RUNNING;
-        lapCount = 0;
-        
-        Serial.println("Stopwatch started locally");
-        
-        if (onStateChanged) {
-            onStateChanged(currentState);
-        }
-    }
+    if (currentState == STOPWATCH_RUNNING) return;
+    timer.start();
+    currentState = STOPWATCH_RUNNING;
+    lapCount = 0;
+    DEBUG_LOG("Stopwatch started");
+    if (onStateChanged) onStateChanged(currentState);
 }
 
 void WebSocketStopwatch::stop() {
-    if (currentState == STOPWATCH_RUNNING) {
-        // Calculate final elapsed time using synchronized time if available
-        if (syncStartTime > 0 && timeSync) {
-            uint64_t currentSyncTime = getSynchronizedTime();
-            elapsedMs = (uint32_t)(currentSyncTime - syncStartTime);
-        } else {
-            // Fallback to local time
-            elapsedMs = millis() - startTimeMs;
-        }
-        
-        currentState = STOPWATCH_STOPPED;
-        
-        Serial.printf("Stopwatch stopped at: %s\n", formatTime(elapsedMs).c_str());
-        
-        if (onStateChanged) {
-            onStateChanged(currentState);
-        }
-    }
+    if (currentState != STOPWATCH_RUNNING) return;
+    timer.stop();
+    currentState = STOPWATCH_STOPPED;
+    DEBUG_LOG("Stopwatch stopped at %u ms", timer.getElapsedMs());
+    if (onStateChanged) onStateChanged(currentState);
 }
 
 void WebSocketStopwatch::reset() {
+    timer.reset();
     currentState = STOPWATCH_STOPPED;
-    startTimeMs = 0;
-    elapsedMs = 0;
-    syncStartTime = 0;
+    syncStartTimestamp = 0;
     lapCount = 0;
-    
-    // Clear lap data
-    for (uint8_t i = 0; i < MAX_LAPS; i++) {
-        laps[i] = {0, 0, 0};
-    }
-    
-    // Clear split times
     clearSplitTimes();
-    
-    Serial.println("Stopwatch reset");
-    
-    if (onStateChanged) {
-        onStateChanged(currentState);
-    }
+    DEBUG_LOG("Stopwatch reset");
+    if (onStateChanged) onStateChanged(currentState);
 }
 
 void WebSocketStopwatch::addLap() {
-    if (currentState == STOPWATCH_RUNNING && lapCount < MAX_LAPS) {
-        // Get current synchronized time for the split
-        uint64_t currentSyncTime = getSynchronizedTime();
-        
-        // Calculate elapsed time using synchronized timestamps if available
-        uint32_t currentElapsed;
-        if (syncStartTime > 0 && timeSync) {
-            // Use synchronized time calculation
-            currentElapsed = (uint32_t)(currentSyncTime - syncStartTime);
-        } else {
-            // Fallback to local time if sync not available
-            currentElapsed = millis() - startTimeMs;
-        }
-        
-        uint32_t lapTime = currentElapsed;
-        if (lapCount > 0) {
-            lapTime = currentElapsed - laps[lapCount - 1].totalTimeMs;
-        }
-        
-        laps[lapCount].lapTimeMs = lapTime;
-        laps[lapCount].totalTimeMs = currentElapsed;
-        laps[lapCount].serverTimestamp = currentSyncTime;
-        
-        lapCount++;
-        
-        Serial.printf("Lap %d added: %s (Total: %s) - Sync time: %llu\n", 
-                      lapCount, formatTime(lapTime).c_str(), formatTime(currentElapsed).c_str(), currentSyncTime);
-        
-        // Send split time via WebSocket with synchronized timestamp
-        sendSplitTime(currentElapsed);
-        
-        if (onLapAdded) {
-            onLapAdded(lapCount, lapTime, currentElapsed);
-        }
+    if (currentState != STOPWATCH_RUNNING || lapCount >= MAX_LAPS) return;
+
+    uint32_t currentElapsed = timer.getElapsedMs();
+    timer.addSplit(laneNumber);
+
+    // Calculate lap time (delta from previous split)
+    const auto& splits = timer.getSplits();
+    uint32_t lapTime = currentElapsed;
+    if (splits.size() > 1) {
+        lapTime = currentElapsed - splits[splits.size() - 2].elapsedMs;
+    }
+
+    lapCount++;
+    DEBUG_LOG("Lap %d: %u ms (total: %u ms)", lapCount, lapTime, currentElapsed);
+
+    // Send split to server with NTP wall-clock timestamp
+    sendSplitTime(currentElapsed);
+
+    if (onLapAdded) {
+        onLapAdded(lapCount, lapTime, currentElapsed);
     }
 }
 
-StopwatchState WebSocketStopwatch::getState() {
-    return currentState;
-}
-
-uint32_t WebSocketStopwatch::getElapsedTime() {
-    if (currentState == STOPWATCH_RUNNING) {
-        // Use synchronized time if available
-        if (syncStartTime > 0 && timeSync) {
-            uint64_t currentSyncTime = getSynchronizedTime();
-            return (uint32_t)(currentSyncTime - syncStartTime);
-        } else {
-            // Fallback to local time
-            return millis() - startTimeMs;
-        }
+void WebSocketStopwatch::sendStart(const String& event, const String& heat) {
+    if (!wsConnected) return;
+    if (startLocked || currentState == STOPWATCH_RUNNING) {
+        DEBUG_LOG("Start blocked: locked or already running");
+        return;
     }
-    return elapsedMs;
+
+    // Capture NTP-synced wall-clock with microsecond precision
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    uint64_t timestampMs = (uint64_t)tv.tv_sec * 1000ULL + (uint64_t)tv.tv_usec / 1000ULL;
+    uint16_t timestampUs = (uint16_t)(tv.tv_usec % 1000);  // Sub-millisecond microseconds (0-999)
+
+    StaticJsonDocument<256> doc;
+    doc["type"] = WS_MSG_START;
+    doc["event"] = event;
+    doc["heat"] = heat;
+    doc["timestamp"] = timestampMs;      // Milliseconds since epoch
+    doc["timestamp_us"] = timestampUs;  // Microseconds component (0-999)
+
+    String message;
+    serializeJson(doc, message);
+    sendMessage(message);
+    startLocked = true;
+    DEBUG_LOG("Start sent: event=%s heat=%s timestamp=%llu.%03u ms",
+             event.c_str(), heat.c_str(), timestampMs, timestampUs);
 }
 
-uint8_t WebSocketStopwatch::getLapCount() {
-    return lapCount;
-}
+// ═══════════════════════════════════════════════════════════════
+// State Queries
+// ═══════════════════════════════════════════════════════════════
 
-const LapData* WebSocketStopwatch::getLaps() {
-    return laps;
-}
+StopwatchState WebSocketStopwatch::getState()       { return currentState; }
+uint32_t WebSocketStopwatch::getElapsedTime()       { return timer.getElapsedMs(); }
+uint8_t  WebSocketStopwatch::getLapCount()           { return lapCount; }
+String   WebSocketStopwatch::getCurrentEvent()       { return currentEvent; }
+String   WebSocketStopwatch::getCurrentHeat()        { return currentHeat; }
+int      WebSocketStopwatch::getPingMs()             { return pingMs; }
 
-bool WebSocketStopwatch::hasServerTime() {
-    return timeSync; // Return true if we have time synchronization active
-}
-
-String WebSocketStopwatch::getCurrentEvent() {
-    return currentEvent;
-}
-
-String WebSocketStopwatch::getCurrentHeat() {
-    return currentHeat;
-}
-
-const WebSocketStopwatch::SplitTimeInfo* WebSocketStopwatch::getSplitTimes() {
+const SplitTimeInfo* WebSocketStopwatch::getSplitTimes() {
     return splitTimes;
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Display Control
+// ═══════════════════════════════════════════════════════════════
 
 void WebSocketStopwatch::clearSplitTimes() {
     for (uint8_t i = 0; i < MAX_LANES; i++) {
         splitTimes[i] = {0, 0, "", false};
     }
-    Serial.println("Split times cleared");
 }
 
 void WebSocketStopwatch::clearDisplay() {
     clearSplitTimes();
     currentEvent = "";
     currentHeat = "";
-    
-    if (onDisplayClear) {
-        onDisplayClear();
-    }
-    
-    Serial.println("Display cleared");
+    if (onDisplayClear) onDisplayClear();
 }
 
-void WebSocketStopwatch::handleRemoteStart(uint64_t serverTime) {
-    syncStartTime = serverTime; // Store synchronized start time
+// ═══════════════════════════════════════════════════════════════
+// Remote Control
+// ═══════════════════════════════════════════════════════════════
+
+void WebSocketStopwatch::handleRemoteStart(uint64_t timestampMs, uint16_t timestampUs) {
+    syncStartTimestamp = timestampMs;
     if (currentState != STOPWATCH_RUNNING) {
-        start();
-        Serial.printf("Remote start received with server time: %llu\n", serverTime);
+        if (timestampMs > 0) {
+            // Calculate how long ago the start actually happened using
+            // NTP-synced clocks on both devices. This compensates for
+            // the WebSocket message delivery delay (typically 5-50ms LAN).
+            struct timeval now;
+            gettimeofday(&now, nullptr);
+            uint64_t nowMs = (uint64_t)now.tv_sec * 1000ULL + (uint64_t)now.tv_usec / 1000ULL;
+            uint16_t nowUs = (uint16_t)(now.tv_usec % 1000);
+            
+            // Calculate total delay in microseconds
+            int64_t delayMs = (int64_t)(nowMs - timestampMs);
+            int64_t delayUs = delayMs * 1000LL + (int64_t)nowUs - (int64_t)timestampUs;
+            if (delayUs < 0) delayUs = 0;  // clock skew guard
+            
+            timer.startWithOffset(delayUs);
+            currentState = STOPWATCH_RUNNING;
+            lapCount = 0;
+            DEBUG_LOG("Remote start, offset %lld µs (%.3f ms)",
+                     delayUs, delayUs / 1000.0);
+            if (onStateChanged) onStateChanged(currentState);
+        } else {
+            // No timestamp — fall back to starting NOW (legacy server)
+            start();
+            DEBUG_LOG("Remote start (no timestamp, no offset)");
+        }
     }
 }
 
 void WebSocketStopwatch::handleRemoteReset() {
     reset();
-    Serial.println("Remote reset received");
+    DEBUG_LOG("Remote reset");
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Utility
+// ═══════════════════════════════════════════════════════════════
 
 String WebSocketStopwatch::formatTime(uint32_t milliseconds) {
-    uint16_t minutes = milliseconds / 60000;
-    uint8_t seconds = (milliseconds / 1000) % 60;
-    uint8_t centiseconds = (milliseconds % 1000) / 10;
-    
-    char buffer[16];
-    sprintf(buffer, "%02d:%02d:%02d", minutes, seconds, centiseconds);
-    return String(buffer);
+    char buf[16];
+    StopwatchTimer::formatMs(milliseconds, true, buf, sizeof(buf));
+    return String(buf);
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Network Helpers
+// ═══════════════════════════════════════════════════════════════
+
 void WebSocketStopwatch::sendSplitTime(uint32_t elapsedTime) {
-    if (!wsConnected) {
-        return;
-    }
-    
-    // Use current synchronized time for split timestamp (not calculated from elapsed)
-    uint64_t splitTimestamp = getSynchronizedTime();
-    
+    if (!wsConnected) return;
+
+    // NTP wall-clock in milliseconds (same precision as sendStart)
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    uint64_t timestampMs = (uint64_t)tv.tv_sec * 1000ULL + (uint64_t)tv.tv_usec / 1000ULL;
+
     StaticJsonDocument<300> doc;
     doc["type"] = WS_MSG_SPLIT;
-    doc["lane"] = laneNumber; // Use integer instead of string per new spec
-    doc["timestamp"] = splitTimestamp; // Use current synchronized timestamp
-    
+    doc["lane"] = laneNumber;
+    doc["elapsed_ms"] = elapsedTime;
+    doc["timestamp"] = timestampMs;  // Milliseconds since epoch (NTP-synced)
+
     String message;
     serializeJson(doc, message);
     sendMessage(message);
-    
-    Serial.printf("Split time sent for lane %d: timestamp=%llu (synchronized)\n", 
-                  laneNumber, splitTimestamp);
+    DEBUG_LOG("Split sent: lane %d, elapsed %u ms", laneNumber, elapsedTime);
 }
 
 void WebSocketStopwatch::sendMessage(const String& message) {
     if (wsConnected) {
-        String msg = message;  // Create non-const copy
+        String msg = message;
         webSocket.sendTXT(msg);
     }
-}
-
-void WebSocketStopwatch::sendStart(const String& event, const String& heat) {
-    if (!wsConnected) {
-        Serial.println("WS not connected - cannot send start");
-        return;
-    }
-    // Gate multiple starts: don't allow when already running or until server reset
-    if (startLocked || currentState == STOPWATCH_RUNNING) {
-        Serial.println("Start blocked: already running or waiting for reset");
-        return;
-    }
-    StaticJsonDocument<256> doc;
-    doc["type"] = WS_MSG_START;
-    doc["event"] = event;
-    doc["heat"] = heat;
-    // Use synchronized time (ms since epoch if server_time reflects epoch)
-    doc["timestamp"] = getSynchronizedTime();
-    String message;
-    serializeJson(doc, message);
-    sendMessage(message);
-    Serial.printf("Starter sent start: event=%s heat=%s ts=%llu\n", event.c_str(), heat.c_str(), (unsigned long long)getSynchronizedTime());
-    // Lock further starts until we receive a reset from server
-    startLocked = true;
-}
-
-uint64_t WebSocketStopwatch::getServerTime() {
-    // Use the synchronized time from ping/pong 
-    return getSynchronizedTime();
-}
-
-// Static WebSocket event wrapper
-void WebSocketStopwatch::webSocketEventWrapper(WStype_t type, uint8_t* payload, size_t length) {
-    if (wsStopwatchInstance) {
-        wsStopwatchInstance->handleWebSocketEvent(type, payload, length);
-    }
-}
-
-void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
-    switch (type) {
-        case WStype_DISCONNECTED:
-            Serial.println("WebSocket Disconnected!");
-            wsConnected = false;
-            if (onConnectionChanged) {
-                onConnectionChanged(false);
-            }
-            break;
-            
-        case WStype_CONNECTED:
-            Serial.printf("WebSocket Connected to: %s\n", payload);
-            wsConnected = true;
-            isRegistered = false;
-            
-            // Reset synchronization state for fresh measurements on new connection
-            bestPingMs = -1;
-            pingSampleCount = 0;
-            timeSync = false;
-            serverTimeOffset = 0;
-            Serial.println("Time sync reset for new connection - starting initial ping sequence");
-            
-            // Start initial rapid ping sequence (per new spec)
-            lastPingTime = 0; // Force immediate ping
-            
-            if (onConnectionChanged) {
-                onConnectionChanged(true);
-            }
-            break;
-            
-        case WStype_TEXT: {
-            Serial.printf("WebSocket received: %s\n", payload);
-            
-            StaticJsonDocument<512> doc;
-            DeserializationError error = deserializeJson(doc, payload);
-            
-            if (error) {
-                Serial.printf("JSON parse error: %s\n", error.c_str());
-                return;
-            }
-            
-            const char* msgType = doc["type"];
-            if (strcmp(msgType, WS_MSG_PING) == 0) {
-                handlePingMessage(doc);
-            } else if (strcmp(msgType, WS_MSG_PONG) == 0) {
-                handlePongMessage(doc);
-            } else if (strcmp(msgType, WS_MSG_START) == 0) {
-                handleStartMessage(doc);
-            } else if (strcmp(msgType, WS_MSG_RESET) == 0) {
-                handleResetMessage(doc);
-            } else if (strcmp(msgType, WS_MSG_SPLIT) == 0) {
-                handleSplitMessage(doc);
-            // Both 'event-heat' and 'select-event' message types are handled identically
-            // because they both update the current event and heat information from the server.
-            // If their purposes diverge in the future, separate handling can be implemented.
-            } else if (strcmp(msgType, WS_MSG_EVENT_HEAT) == 0 || strcmp(msgType, WS_MSG_SELECT_EVENT) == 0) {
-                handleEventHeatMessage(doc);
-            } else if (strcmp(msgType, WS_MSG_CLEAR) == 0) {
-                handleClearMessage(doc);
-            } else if (strcmp(msgType, WS_MSG_DEVICE_UPDATE_ROLE) == 0) {
-                handleDeviceUpdateRoleMessage(doc);
-            } else if (strcmp(msgType, WS_MSG_DEVICE_UPDATE_LANE) == 0) {
-                handleDeviceUpdateLaneMessage(doc);
-            }
-            break;
-        }
-        
-        case WStype_ERROR:
-            Serial.printf("WebSocket Error: %s\n", payload);
-            break;
-            
-        default:
-            break;
-    }
-}
-
-void WebSocketStopwatch::handleStartMessage(JsonDocument& doc) {
-    if (doc.containsKey("timestamp")) {
-        uint64_t serverTime = doc["timestamp"].as<uint64_t>();
-        handleRemoteStart(serverTime);
-    } else {
-        start(); // Start without server time
-    }
-    // Ensure lock is engaged when a start is processed
-    startLocked = true;
-}
-
-void WebSocketStopwatch::handleResetMessage(JsonDocument& doc) {
-    handleRemoteReset();
-    // Unlock start after server reset message
-    startLocked = false;
-}
-
-void WebSocketStopwatch::handleSplitMessage(JsonDocument& doc) {
-    if (doc.containsKey("lane") && doc.containsKey("timestamp")) {
-        uint8_t lane = doc["lane"].as<uint8_t>();
-        uint64_t timestamp = doc["timestamp"].as<uint64_t>();
-        String timeStr = doc.containsKey("time") ? doc["time"].as<String>() : "00:00:00";
-        
-        if (lane < MAX_LANES) {
-            splitTimes[lane].lane = lane;
-            splitTimes[lane].timestamp = timestamp;
-            splitTimes[lane].formattedTime = timeStr;
-            splitTimes[lane].isValid = true;
-            
-            Serial.printf("Split time received for lane %d: %s\n", lane, timeStr.c_str());
-            
-            if (onSplitTimeReceived) {
-                onSplitTimeReceived(lane, timeStr);
-            }
-        }
-    }
-}
-
-void WebSocketStopwatch::handleEventHeatMessage(JsonDocument& doc) {
-    if (doc.containsKey("event") && doc.containsKey("heat")) {
-        currentEvent = doc["event"].as<String>();
-        currentHeat = doc["heat"].as<String>();
-        
-        Serial.printf("Event/Heat updated: %s / %s\n", currentEvent.c_str(), currentHeat.c_str());
-        
-        if (onEventHeatChanged) {
-            onEventHeatChanged(currentEvent, currentHeat);
-        }
-    }
-}
-
-void WebSocketStopwatch::handleClearMessage(JsonDocument& doc) {
-    clearDisplay();
-}
-
-void WebSocketStopwatch::handleDeviceUpdateRoleMessage(JsonDocument& doc) {
-    if (doc.containsKey("mac") && doc.containsKey("role")) {
-        String mac = doc["mac"].as<String>();
-        String role = doc["role"].as<String>();
-        
-        // Only process if the update is for this device
-        if (mac == deviceMAC) {
-            // Validate role
-            if (role == "lane" || role == "starter") {
-                deviceRole = role;
-                Serial.printf("Device role updated to: %s\n", deviceRole.c_str());
-                
-                // Notify application of config change
-                if (onDeviceConfigChanged) {
-                    onDeviceConfigChanged(deviceRole, laneNumber);
-                }
-            } else {
-                Serial.printf("Invalid role received: %s\n", role.c_str());
-            }
-        }
-    }
-}
-
-void WebSocketStopwatch::handleDeviceUpdateLaneMessage(JsonDocument& doc) {
-    if (doc.containsKey("mac") && doc.containsKey("lane")) {
-        String mac = doc["mac"].as<String>();
-        uint8_t lane = doc["lane"].as<uint8_t>();
-        
-        // Only process if the update is for this device
-        if (mac == deviceMAC) {
-            laneNumber = lane;
-            Serial.printf("Device lane updated to: %d\n", laneNumber);
-            
-            // Notify application of config change
-            if (onDeviceConfigChanged) {
-                onDeviceConfigChanged(deviceRole, laneNumber);
-            }
-        }
-    }
-}
-
-int WebSocketStopwatch::getPingMs() {
-    return pingMs;
 }
 
 void WebSocketStopwatch::sendJsonPing() {
     StaticJsonDocument<128> doc;
     doc["type"] = WS_MSG_PING;
-    doc["time"] = millis(); // Send current client time
-    
+    doc["time"] = millis();  // For RTT measurement only (not time sync)
+
     String message;
     serializeJson(doc, message);
     sendMessage(message);
 }
 
 void WebSocketStopwatch::sendDeviceRegistration() {
-    if (!wsConnected || deviceMAC.isEmpty() || deviceRole.isEmpty()) {
-        Serial.println("Cannot send device registration - missing required data");
-        return;
-    }
-    
+    if (!wsConnected || deviceMAC.isEmpty()) return;
+
     StaticJsonDocument<300> doc;
     doc["type"] = WS_MSG_DEVICE_REGISTER;
     doc["mac"] = deviceMAC;
     doc["ip"] = WiFi.localIP().toString();
     doc["role"] = deviceRole;
-    
-    // Only include lane number for lane devices
     if (deviceRole == "lane") {
         doc["lane"] = laneNumber;
     }
-    
+
     String message;
     serializeJson(doc, message);
     sendMessage(message);
-    
     isRegistered = true;
-    Serial.printf("Device registration sent - Role: %s, MAC: %s, IP: %s", 
-                  deviceRole.c_str(), deviceMAC.c_str(), WiFi.localIP().toString().c_str());
-    if (deviceRole == "lane") {
-        Serial.printf(", Lane: %d", laneNumber);
-    }
-    Serial.println();
+    DEBUG_LOG("Registered: role=%s, MAC=%s", deviceRole.c_str(), deviceMAC.c_str());
 }
 
-void WebSocketStopwatch::handlePingMessage(JsonDocument& doc) {
-    // Server sent us a ping, we should respond with pong
-    // This is unusual but we handle it per spec
-    StaticJsonDocument<128> response;
-    response["type"] = WS_MSG_PONG;
-    response["client_ping_time"] = doc["time"];
-    response["server_time"] = millis(); // Our time (acting as server)
-    
-    String message;
-    serializeJson(response, message);
-    sendMessage(message);
-    
-    Serial.println("Responded to server ping with pong");
+// ═══════════════════════════════════════════════════════════════
+// WebSocket Event Handling
+// ═══════════════════════════════════════════════════════════════
+
+void WebSocketStopwatch::webSocketEventWrapper(WStype_t type, uint8_t* payload, size_t length) {
+    if (wsInstance) wsInstance->handleWebSocketEvent(type, payload, length);
+}
+
+void WebSocketStopwatch::handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
+    switch (type) {
+        case WStype_DISCONNECTED:
+            DEBUG_LOG("WS disconnected");
+            wsConnected = false;
+            if (onConnectionChanged) onConnectionChanged(false);
+            break;
+
+        case WStype_CONNECTED:
+            DEBUG_LOG("WS connected to: %s", payload);
+            wsConnected = true;
+            isRegistered = false;
+            pingMs = -1;
+            lastPingTime = 0;  // Force immediate ping
+            if (onConnectionChanged) onConnectionChanged(true);
+            break;
+
+        case WStype_TEXT: {
+            StaticJsonDocument<512> doc;
+            DeserializationError error = deserializeJson(doc, payload);
+            if (error) {
+                DEBUG_LOG("JSON parse error: %s", error.c_str());
+                return;
+            }
+
+            const char* msgType = doc["type"];
+            if (!msgType) return;
+
+            // Dispatch to handler
+            if      (strcmp(msgType, WS_MSG_START) == 0)              handleStartMessage(doc);
+            else if (strcmp(msgType, WS_MSG_RESET) == 0)              handleResetMessage(doc);
+            else if (strcmp(msgType, WS_MSG_SPLIT) == 0)              handleSplitMessage(doc);
+            else if (strcmp(msgType, WS_MSG_EVENT_HEAT) == 0 ||
+                     strcmp(msgType, WS_MSG_SELECT_EVENT) == 0)       handleEventHeatMessage(doc);
+            else if (strcmp(msgType, WS_MSG_CLEAR) == 0)              handleClearMessage(doc);
+            else if (strcmp(msgType, WS_MSG_PONG) == 0)               handlePongMessage(doc);
+            else if (strcmp(msgType, WS_MSG_DEVICE_UPDATE_ROLE) == 0) handleDeviceUpdateRoleMessage(doc);
+            else if (strcmp(msgType, WS_MSG_DEVICE_UPDATE_LANE) == 0) handleDeviceUpdateLaneMessage(doc);
+            break;
+        }
+
+        case WStype_ERROR:
+            DEBUG_LOG("WS error: %s", payload);
+            break;
+
+        default:
+            break;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Message Handlers
+// ═══════════════════════════════════════════════════════════════
+
+void WebSocketStopwatch::handleStartMessage(JsonDocument& doc) {
+    uint64_t timestamp = doc.containsKey("timestamp") ? doc["timestamp"].as<uint64_t>() : 0;
+    uint16_t timestampUs = doc.containsKey("timestamp_us") ? doc["timestamp_us"].as<uint16_t>() : 0;
+    handleRemoteStart(timestamp, timestampUs);
+    startLocked = true;
+}
+
+void WebSocketStopwatch::handleResetMessage(JsonDocument& doc) {
+    handleRemoteReset();
+    startLocked = false;
+}
+
+void WebSocketStopwatch::handleSplitMessage(JsonDocument& doc) {
+    if (!doc.containsKey("lane") || !doc.containsKey("timestamp")) return;
+
+    uint8_t lane = doc["lane"].as<uint8_t>();
+    uint64_t timestamp = doc["timestamp"].as<uint64_t>();
+    String timeStr = doc.containsKey("time") ? doc["time"].as<String>() : "00:00.00";
+
+    if (lane < MAX_LANES) {
+        splitTimes[lane] = { lane, timestamp, timeStr, true };
+        DEBUG_LOG("Split received: lane %d = %s", lane, timeStr.c_str());
+        if (onSplitTimeReceived) onSplitTimeReceived(lane, timeStr);
+    }
+}
+
+void WebSocketStopwatch::handleEventHeatMessage(JsonDocument& doc) {
+    if (!doc.containsKey("event") || !doc.containsKey("heat")) return;
+    currentEvent = doc["event"].as<String>();
+    currentHeat = doc["heat"].as<String>();
+    DEBUG_LOG("Event/Heat: %s/%s", currentEvent.c_str(), currentHeat.c_str());
+    if (onEventHeatChanged) onEventHeatChanged(currentEvent, currentHeat);
+}
+
+void WebSocketStopwatch::handleClearMessage(JsonDocument& doc) {
+    clearDisplay();
 }
 
 void WebSocketStopwatch::handlePongMessage(JsonDocument& doc) {
-    // Server responded to our ping
-    lastPongTime = millis();
-    
-    if (doc.containsKey("client_ping_time") && doc.containsKey("server_time")) {
-        uint64_t clientPingTime = doc["client_ping_time"];
-        uint64_t serverTime = doc["server_time"];
-        
-        // Calculate round-trip time
-        pingMs = lastPongTime - clientPingTime;
-        
-        // Calculate server time offset using: offset = server_time - client_time - rtt/2
-        int64_t clientTime = lastPongTime;
-        serverTimeOffset = serverTime - clientTime - (pingMs / 2);
-        timeSync = true;
-        
-        // Track best ping time for more accurate lag compensation
-        if (bestPingMs == -1 || pingMs < bestPingMs) {
-            bestPingMs = pingMs;
-            Serial.printf("New best ping: %dms\n", bestPingMs);
-        }
-        pingSampleCount++;
-        
-        Serial.printf("Pong received - ping: %dms, best: %dms, offset: %lldms, samples: %d\n", 
-                     pingMs, bestPingMs, serverTimeOffset, pingSampleCount);
-        
-        // Send device registration after first successful time sync
-        if (pingSampleCount == 1 && !isRegistered) {
-            Serial.println("Time sync achieved - sending device registration");
-            sendDeviceRegistration();
-        }
-        
-        if (onTimeSync) {
-            onTimeSync(timeSync);
-        }
-    } else {
-        Serial.println("Invalid pong message format");
+    if (!doc.containsKey("client_ping_time")) return;
+    uint64_t clientPingTime = doc["client_ping_time"];
+    pingMs = millis() - clientPingTime;
+    DEBUG_LOG("Pong: %d ms", pingMs);
+
+    // Register device after first successful pong
+    if (!isRegistered) {
+        sendDeviceRegistration();
     }
 }
 
-uint64_t WebSocketStopwatch::getSynchronizedTime() {
-    if (timeSync) {
-        return millis() + serverTimeOffset;
+void WebSocketStopwatch::handleDeviceUpdateRoleMessage(JsonDocument& doc) {
+    if (!doc.containsKey("mac") || !doc.containsKey("role")) return;
+    String mac = doc["mac"].as<String>();
+    String role = doc["role"].as<String>();
+
+    if (mac == deviceMAC && (role == "lane" || role == "starter")) {
+        deviceRole = role;
+        DEBUG_LOG("Role updated: %s", deviceRole.c_str());
+        if (onDeviceConfigChanged) onDeviceConfigChanged(deviceRole, laneNumber);
     }
-    return millis(); // Fallback to local time if not synchronized
+}
+
+void WebSocketStopwatch::handleDeviceUpdateLaneMessage(JsonDocument& doc) {
+    if (!doc.containsKey("mac") || !doc.containsKey("lane")) return;
+    String mac = doc["mac"].as<String>();
+    uint8_t lane = doc["lane"].as<uint8_t>();
+
+    if (mac == deviceMAC) {
+        laneNumber = lane;
+        DEBUG_LOG("Lane updated: %d", laneNumber);
+        if (onDeviceConfigChanged) onDeviceConfigChanged(deviceRole, laneNumber);
+    }
 }
