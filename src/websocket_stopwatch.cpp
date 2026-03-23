@@ -143,11 +143,18 @@ void WebSocketStopwatch::reset() {
     if (onStateChanged) onStateChanged(currentState);
 }
 
-void WebSocketStopwatch::addLap() {
+void WebSocketStopwatch::addLap(int64_t capturedTimeUs) {
     if (currentState != STOPWATCH_RUNNING || lapCount >= MAX_LAPS) return;
 
-    uint32_t currentElapsed = timer.getElapsedMs();
-    timer.addSplit(laneNumber);
+    // Use ISR-captured timestamp if available, otherwise current time
+    uint32_t currentElapsed;
+    if (capturedTimeUs > 0) {
+        timer.addSplit(laneNumber, capturedTimeUs);
+        currentElapsed = timer.getSplits().back().elapsedMs;
+    } else {
+        currentElapsed = timer.getElapsedMs();
+        timer.addSplit(laneNumber);
+    }
 
     // Calculate lap time (delta from previous split)
     const auto& splits = timer.getSplits();

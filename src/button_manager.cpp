@@ -10,6 +10,7 @@
  * GPIO2  (external): needs INPUT_PULLUP — FALLING on press
  */
 #include "button_manager.h"
+#include <esp_timer.h>
 
 ButtonManager* ButtonManager::_instance = nullptr;
 
@@ -17,6 +18,8 @@ ButtonManager::ButtonManager()
     : _startStopFlag(false)
     , _resetFlag(false)
     , _splitFlag(false)
+    , _splitTimestampUs(0)
+    , _startStopTimestampUs(0)
     , _lastStartStop(0)
     , _lastReset(0)
     , _lastSplit(0)
@@ -45,34 +48,41 @@ bool ButtonManager::init() {
     return true;
 }
 
-ButtonEvent ButtonManager::getButtonEvent() {
+ButtonEventData ButtonManager::getButtonEvent() {
     // Priority: start/stop > reset > split
     if (_startStopFlag) {
         _startStopFlag = false;
-        return BUTTON_START_STOP;
+        int64_t ts = _startStopTimestampUs;
+        _startStopTimestampUs = 0;
+        return {BUTTON_START_STOP, ts};
     }
     if (_resetFlag) {
         _resetFlag = false;
-        return BUTTON_RESET;
+        return {BUTTON_RESET, 0};
     }
     // GPIO2: check ISR flag OR poll directly (ISR unreliable on strapping pins)
     // Button connects to 3.3V — detect rising edge (LOW→HIGH)
     bool splitByPolling = false;
+    int64_t pollingTimestampUs = 0;
     bool pinHigh = (digitalRead(PIN_BUTTON_SPLIT) == HIGH);
     if (pinHigh && _splitPinWasLow) {
-        // Rising edge detected via polling
+        // Rising edge detected via polling — capture time immediately
         uint32_t now = millis();
         if (now - _lastSplit > BUTTON_DEBOUNCE_MS) {
             _lastSplit = now;
+            pollingTimestampUs = esp_timer_get_time();
             splitByPolling = true;
         }
     }
     _splitPinWasLow = !pinHigh;
     if (_splitFlag || splitByPolling) {
+        // Prefer ISR timestamp (more accurate), fall back to polling timestamp
+        int64_t ts = _splitFlag ? _splitTimestampUs : pollingTimestampUs;
         _splitFlag = false;
-        return BUTTON_LAP_PRESSED;
+        _splitTimestampUs = 0;
+        return {BUTTON_LAP_PRESSED, ts};
     }
-    return BUTTON_NONE;
+    return {BUTTON_NONE, 0};
 }
 
 void ButtonManager::clearEvents() {
@@ -87,6 +97,7 @@ void IRAM_ATTR ButtonManager::_isrStartStop() {
     if (!_instance) return;
     uint32_t now = millis();
     if (now - _instance->_lastStartStop > BUTTON_DEBOUNCE_MS) {
+        _instance->_startStopTimestampUs = esp_timer_get_time();
         _instance->_startStopFlag = true;
         _instance->_lastStartStop = now;
     }
@@ -107,6 +118,7 @@ void IRAM_ATTR ButtonManager::_isrSplit() {
     if (digitalRead(PIN_BUTTON_SPLIT) != HIGH) return;
     uint32_t now = millis();
     if (now - _instance->_lastSplit > BUTTON_DEBOUNCE_MS) {
+        _instance->_splitTimestampUs = esp_timer_get_time();
         _instance->_splitFlag = true;
         _instance->_lastSplit = now;
     }

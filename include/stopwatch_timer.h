@@ -64,6 +64,14 @@ public:
      */
     void addSplit(uint8_t lane = 0);
 
+    /**
+     * Record a split time using a pre-captured hardware timestamp.
+     * Use this when the timestamp was captured in an ISR for maximum accuracy.
+     * @param lane            Lane number (0 for local button press)
+     * @param capturedTimeUs  esp_timer_get_time() value captured at button press
+     */
+    void addSplit(uint8_t lane, int64_t capturedTimeUs);
+
     /** @return true if the timer is currently running */
     bool isRunning() const;
 

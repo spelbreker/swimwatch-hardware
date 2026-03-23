@@ -73,7 +73,7 @@ public:
     void start();
     void stop();
     void reset();
-    void addLap();
+    void addLap(int64_t capturedTimeUs = 0);
     void sendStart(const String& event, const String& heat);
 
     // ── State queries ──────────────────────────────────────────

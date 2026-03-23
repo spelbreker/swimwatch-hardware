@@ -264,10 +264,10 @@ void normalMode() {
 void handleButtonEvents() {
     if (!systemInitialized) return;
     
-    ButtonEvent event = buttons.getButtonEvent();
-    if (event == BUTTON_NONE) return;
+    ButtonEventData eventData = buttons.getButtonEvent();
+    if (eventData.event == BUTTON_NONE) return;
     
-    switch (event) {
+    switch (eventData.event) {
         case BUTTON_START_STOP:
             // GPIO0: Toggle start/stop
             if (stopwatch.getState() == STOPWATCH_RUNNING) {
@@ -302,8 +302,8 @@ void handleButtonEvents() {
                 DEBUG_LOG("Starter button → start sent");
             } else {
                 if (stopwatch.getState() == STOPWATCH_RUNNING) {
-                    stopwatch.addLap();
-                    DEBUG_LOG("Split recorded via button");
+                    stopwatch.addLap(eventData.timestampUs);
+                    DEBUG_LOG("Split recorded via button (ISR timestamp)");
                 } else {
                     DEBUG_LOG("Button pressed — stopwatch not running");
                 }
