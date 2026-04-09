@@ -59,6 +59,22 @@ void StopwatchTimer::addSplit(uint8_t lane) {
     DEBUG_LOG("Split: %u ms (lane %u)", split.elapsedMs, split.lane);
 }
 
+void StopwatchTimer::addSplit(uint8_t lane, int64_t capturedTimeUs) {
+    if (!_running || capturedTimeUs <= 0) {
+        // Fall back to current-time capture
+        addSplit(lane);
+        return;
+    }
+    SplitTime split;
+    split.elapsedMs = static_cast<uint32_t>((capturedTimeUs - _startTimeUs) / 1000);
+    split.wallClock = time(nullptr);
+    split.lane = lane;
+    _splits.push_back(split);
+    DEBUG_LOG("Split (ISR): %u ms (lane %u, saved ~%ld µs)",
+             split.elapsedMs, split.lane,
+             (long)(esp_timer_get_time() - capturedTimeUs));
+}
+
 bool StopwatchTimer::isRunning() const {
     return _running;
 }

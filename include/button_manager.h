@@ -14,6 +14,7 @@
 #define BUTTON_MANAGER_H
 
 #include <Arduino.h>
+#include <esp_timer.h>
 #include "config.h"
 
 /** Button events returned by getButtonEvent() */
@@ -22,6 +23,12 @@ enum ButtonEvent {
     BUTTON_START_STOP,   ///< GPIO0 pressed  — toggle start/stop
     BUTTON_RESET,        ///< GPIO14 pressed — reset (only when stopped)
     BUTTON_LAP_PRESSED   ///< GPIO2 pressed  — split / starter send
+};
+
+/** Button event with ISR-captured hardware timestamp for split accuracy */
+struct ButtonEventData {
+    ButtonEvent event;         ///< Which button was pressed
+    int64_t     timestampUs;   ///< esp_timer_get_time() captured at press (0 = not captured)
 };
 
 /**
@@ -35,8 +42,8 @@ public:
     /** Configure GPIOs and attach interrupts. Call once in setup(). */
     bool init();
 
-    /** Return the next pending event (one per call, priority order). */
-    ButtonEvent getButtonEvent();
+    /** Return the next pending event with ISR-captured timestamp (one per call, priority order). */
+    ButtonEventData getButtonEvent();
 
     /** Discard all pending events. */
     void clearEvents();
@@ -46,6 +53,10 @@ private:
     volatile bool _startStopFlag;
     volatile bool _resetFlag;
     volatile bool _splitFlag;
+
+    // ISR-captured hardware timestamps (esp_timer_get_time, µs resolution)
+    volatile int64_t _splitTimestampUs;
+    volatile int64_t _startStopTimestampUs;
 
     // Debounce timestamps
     volatile uint32_t _lastStartStop;
